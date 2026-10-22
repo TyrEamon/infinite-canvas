@@ -506,9 +506,13 @@ export function CanvasAssistantPanel({
             const modelText = omittedCodexImageCount
                 ? `${text}\n\n（${omittedCodexImageCount} 张参考图因读取失败或超出请求预算已省略。）`
                 : text;
+            // 图片节点生成每次使用独立 thread，避免生成图片在后续请求中累积，也不覆盖普通对话的 thread。
+            const isolatedImageThread = Boolean(imageTargetNodeId);
             const run = mode === "codex" ? (input: Parameters<typeof runCanvasAgent>[0]) => codex.run({
-                ...input, threadId: session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
-                onThread: (codexThreadId, codexServiceId) => updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId })),
+                ...input, threadId: isolatedImageThread ? undefined : session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
+                onThread: (codexThreadId, codexServiceId) => {
+                    if (!isolatedImageThread) updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId }));
+                },
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
                 onImageGenerated: onCodexImageGenerated ? (dataUrl, revisedPrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: optimizeImagePrompt && revisedPrompt !== text ? revisedPrompt : imagePrompt || revisedPrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
             }) : runCanvasAgent;
