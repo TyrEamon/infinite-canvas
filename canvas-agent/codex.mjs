@@ -14,7 +14,7 @@ export class CodexClient {
 
     constructor(emit) {
         this.emit = emit;
-        this.child = spawn(process.execPath, [binary, "app-server", "--disable", "image_generation"], {
+        this.child = spawn(process.execPath, [binary, "app-server"], {
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: true,
         });

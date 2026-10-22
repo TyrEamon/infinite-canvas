@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/tigerowo/infinite-canvas:latest
+    image: ghcr.io/tyreamon/infinite-canvas:latest
     build:
       context: .
       dockerfile: Dockerfile

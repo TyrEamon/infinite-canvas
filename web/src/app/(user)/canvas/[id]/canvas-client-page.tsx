@@ -2944,6 +2944,28 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setAgentConfig((current) => ({ ...(current || resolvedAgentConfig), ...patch }));
     }, [resolvedAgentConfig]);
 
+    const startCodexImageIteration = useCallback((nodeId: string, prompt: string) => {
+        const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
+        if (!imageNode || !prompt.trim()) return;
+        const upstream = buildNodeMentionReferences(imageNode, nodesRef.current, connectionsRef.current)
+            .filter((reference) => reference.kind === "image" && reference.nodeId !== imageNode.id);
+        const references: CanvasAssistantReference[] = upstream.flatMap((reference) => {
+            const source = nodesRef.current.find((node) => node.id === reference.nodeId);
+            const content = source && assistantReferenceContentFromNode(source);
+            return source && content ? [{ id: source.id, type: source.type, title: source.title, label: reference.label, ...content }] : [];
+        });
+        const ownContent = assistantReferenceContentFromNode(imageNode);
+        if (ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
+        setInitialAgentRequest({
+            prompt: `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n本轮附图包含上游连接的图片素材；列表最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`,
+            references,
+            skills: [],
+        });
+        handleAgentConfigChange({ mode: "codex" });
+        setAssistantMounted(true);
+        setAgentPanel((current) => ({ ...current, open: true }));
+    }, [handleAgentConfigChange]);
+
     const startTitleEditing = useCallback(() => {
         setTitleDraft(currentProject?.title || "未命名画布");
         setTitleEditing(true);
@@ -4131,6 +4153,61 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         [screenToCanvas, size.height, size.width],
     );
 
+    const saveCodexImageToCanvas = useCallback(async ({ dataUrl, prompt, sourceNodeIds }: { dataUrl: string; prompt: string; sourceNodeIds: string[] }) => {
+        const image = await uploadImage(dataUrl);
+        const nodeSize = fitNodeSize(image.width, image.height);
+        const sourceNodes = [...new Set(sourceNodeIds)]
+            .map((id) => nodesRef.current.find((node) => node.id === id))
+            .filter((node): node is CanvasNodeData => Boolean(node && isCanvasReferenceNode(node)));
+        const source = sourceNodes.length
+            ? sourceNodes.reduce((rightmost, node) => node.position.x + node.width > rightmost.position.x + rightmost.width ? node : rightmost)
+            : null;
+        const gapX = 96;
+        const gapY = 72;
+        const fallbackCenter = source ? null : getCanvasCenter();
+        const startX = source ? source.position.x + source.width + gapX + nodeSize.width / 2 : fallbackCenter!.x;
+        const startY = source ? source.position.y + source.height / 2 : fallbackCenter!.y;
+        const collides = (x: number, y: number) => nodesRef.current.some((node) =>
+            x - nodeSize.width / 2 < node.position.x + node.width + gapX &&
+            x + nodeSize.width / 2 + gapX > node.position.x &&
+            y - nodeSize.height / 2 < node.position.y + node.height + gapY &&
+            y + nodeSize.height / 2 + gapY > node.position.y,
+        );
+        let center: Position | null = null;
+        const maxSlots = Math.max(30, (nodesRef.current.length + 1) * 6);
+        for (let slot = 0; slot < maxSlots; slot += 1) {
+            const candidate = { x: startX + (slot % 3) * (nodeSize.width + gapX), y: startY + Math.floor(slot / 3) * (nodeSize.height + gapY) };
+            if (!collides(candidate.x, candidate.y)) { center = candidate; break; }
+        }
+        center ||= { x: startX, y: Math.max(fallbackCenter?.y || 0, ...nodesRef.current.map((node) => node.position.y + node.height + gapY + nodeSize.height / 2)) };
+        const id = `image-${nanoid()}`;
+        const imagePrompt = prompt || "Codex Image";
+        const node: CanvasNodeData = {
+            id,
+            type: CanvasNodeType.Image,
+            title: imagePrompt.slice(0, 32),
+            position: { x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2 },
+            width: nodeSize.width,
+            height: nodeSize.height,
+            metadata: { ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
+        };
+        const nextNodes = [...nodesRef.current, node];
+        const nextConnections = [
+            ...connectionsRef.current,
+            ...sourceNodes.filter((sourceNode) => !connectionsRef.current.some((connection) => connection.fromNodeId === sourceNode.id && connection.toNodeId === id))
+                .map((sourceNode) => ({ id: nanoid(), fromNodeId: sourceNode.id, toNodeId: id })),
+        ];
+        nodesRef.current = nextNodes;
+        connectionsRef.current = nextConnections;
+        setNodes(nextNodes);
+        setConnections(nextConnections);
+        const selection = new Set([id]);
+        selectedNodeIdsRef.current = selection;
+        setSelectedNodeIds(selection);
+        setSelectedConnectionId(null);
+        setDialogNodeId(id);
+    }, [getCanvasCenter]);
+
     const insertAssetAtRef = useRef(insertAssetAt);
     useLayoutEffect(() => {
         insertAssetAtRef.current = insertAssetAt;
@@ -4376,6 +4453,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                             if (panelNode.metadata?.status === "stopped" && !prompt.trim()) void handleRetryNode(panelNode);
                                             else void handleGenerateNode(nodeId, mode, prompt);
                                         }}
+                                        onCodexGenerate={startCodexImageIteration}
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}
@@ -4794,6 +4872,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     }}
                     getAgentContext={getCanvasAgentContext}
                     onExecuteAction={executeCanvasAgentAction}
+                    onCodexImageGenerated={saveCodexImageToCanvas}
                     onCollapseStart={() =>
                         setAgentPanel((current) => ({ ...current, open: false }))
                     }

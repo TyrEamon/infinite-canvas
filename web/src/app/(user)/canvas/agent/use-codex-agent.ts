@@ -17,10 +17,11 @@ type Client = ReturnType<typeof createCodexAgentClient>;
 type RunInput = RunCanvasAgentInput & {
     threadId?: string; serviceId?: string; model?: string; effort?: string;
     onThread: (threadId: string, serviceId: string) => void; onText: (text: string) => void;
+    onImageGenerated?: (dataUrl: string, prompt: string) => Promise<void>;
 };
 type ActiveRun = {
     input: RunInput; state: CanvasAgentState; threadId?: string; turnId?: string;
-    buffer: CodexRpcEvent[]; messages: Map<string, string>; finished: boolean; controller: AbortController;
+    buffer: CodexRpcEvent[]; messages: Map<string, string>; imageTasks: Promise<void>[]; imageError?: Error; finishing?: boolean; finished: boolean; controller: AbortController;
     finish: (error?: Error) => void;
 };
 const CONNECTION_KEY = "canvas-codex-connection";
@@ -171,10 +172,24 @@ export function useCodexAgent(options: {
             } else if (event.method === "item/completed" && params.item?.type === "agentMessage") {
                 pending.messages.set(params.item.id, params.item.text || "");
                 pending.input.onText([...pending.messages.values()].join("\n\n"));
+            } else if (event.method === "item/completed" && params.item?.type === "imageGeneration" && params.item.result) {
+                const result = params.item.result;
+                const dataUrl = result.startsWith("data:image/") ? result : `data:image/png;base64,${result}`;
+                const generatedPrompt = params.item.revisedPrompt || pending.input.userText;
+                pending.input.onEvent?.({ status: "running", label: "正在保存 Codex 生成图片到画布" });
+                if (pending.input.onImageGenerated) {
+                    pending.imageTasks.push(Promise.resolve().then(() => pending.input.onImageGenerated!(dataUrl, generatedPrompt)).catch((reason) => {
+                        pending.imageError = reason instanceof Error ? reason : new Error("保存 Codex 生成图片失败");
+                    }));
+                }
+            } else if (event.method === "item/completed" && params.item?.type === "imageGeneration" && pending.input.onImageGenerated) {
+                pending.imageError = new Error("Codex 完成了图片生成，但没有返回图片数据，无法自动保存到画布");
             } else if (event.method === "turn/completed") {
                 const turn = params.turn!;
-                pending.finish(turn.status === "failed" ? new Error(turn.error?.message || "Codex 执行失败")
-                    : turn.status === "interrupted" ? stopped() : undefined);
+                if (pending.finishing) return;
+                pending.finishing = true;
+                void Promise.all(pending.imageTasks).then(() => pending.finish(turn.status === "failed" ? new Error(turn.error?.message || "Codex 执行失败")
+                    : turn.status === "interrupted" ? stopped() : pending.imageError));
             } else if (event.method === "item/started") {
                 pending.input.onEvent?.({ status: "running", label: "Codex 正在处理" });
             }
@@ -252,7 +267,7 @@ export function useCodexAgent(options: {
             };
             const pending: ActiveRun = {
                 input, state: input.initialState, threadId,
-                buffer: [], messages: new Map(), finished: false, controller: new AbortController(),
+                buffer: [], messages: new Map(), imageTasks: [], finished: false, controller: new AbortController(),
                 finish: (reason) => {
                     if (pending.finished) return;
                     pending.finished = true;
@@ -268,7 +283,9 @@ export function useCodexAgent(options: {
             void (async () => {
                 const skills = input.activeSkillContents?.map((skill) => "【完整 Skill：" + skill.name + "，ID：" + skill.id + "】\n" + skill.content).join("\n\n");
                 const hasFiles = Boolean(input.activeSkillContents?.some((skill) => skill.source === "system" && skill.hasFiles));
-                const developerInstructions = canvasAgentSystemPrompt(input.config, buildCanvasAgentSkillPrompt(input.initialState.phase, input.userText, input.getContext(input.initialState), skills, input.contextCheckpoint, hasFiles));
+                const imageCount = input.references.filter((item) => item.dataUrl && /^data:image\//.test(item.dataUrl)).length;
+                const imageInstructions = `\n\n画布图片生成要求：当用户在本次画布任务中要求生成或迭代图片时，使用 Codex 内置的 ImageGen 工具，不要调用画布的 generate_image 或 edit_image 工具，也不要使用画布配置的外部生图模型。若本轮附有图片，将它们作为 ImageGen 的参考图（最多 ${Math.min(imageCount, 5)} 张；使用 num_last_images_to_include 参数），按本轮文字要求生成。不要默认复用前几轮的图片。本次生成的图片会由系统自动保存为画布图片节点并连接到本轮引用的素材节点。`;
+                const developerInstructions = canvasAgentSystemPrompt(input.config, buildCanvasAgentSkillPrompt(input.initialState.phase, input.userText, input.getContext(input.initialState), skills, input.contextCheckpoint, hasFiles)) + imageInstructions;
                 const { thread } = await link.rpc<{ thread: { id: string } }>(threadId ? "thread/resume" : "thread/start", {
                     ...(threadId ? { threadId } : {}), developerInstructions, ...(input.model ? { model: input.model } : {}),
                 });

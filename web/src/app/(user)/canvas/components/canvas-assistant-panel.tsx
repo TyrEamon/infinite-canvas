@@ -97,6 +97,7 @@ type CanvasAssistantPanelProps = {
     onOpenAssets: () => void;
     getAgentContext: (state: CanvasAgentState) => CanvasAgentContext;
     onExecuteAction: (action: CanvasAgentAction, messageReferenceNodeIds: string[]) => Promise<CanvasAgentToolResult>;
+    onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[] }) => Promise<void>;
     onCollapseStart: () => void;
     onCollapse: () => void;
     initialRequest?: { prompt: string; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[] } | null;
@@ -129,6 +130,7 @@ export function CanvasAssistantPanel({
     onOpenAssets,
     getAgentContext,
     onExecuteAction,
+    onCodexImageGenerated,
     onCollapseStart,
     onCollapse,
     initialRequest,
@@ -483,6 +485,7 @@ export function CanvasAssistantPanel({
                 ...input, threadId: session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId })),
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
+                onImageGenerated: onCodexImageGenerated ? (dataUrl, imagePrompt) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt, sourceNodeIds: messageReferenceNodeIds }) : undefined,
             }) : runCanvasAgent;
             const result = await run({
                 config: requestConfig,
@@ -535,10 +538,12 @@ export function CanvasAssistantPanel({
 
     useEffect(() => {
         if (!initialRequest || consumedInitialRequestRef.current === initialRequest) return;
+        if (isRunning) return;
+        if (mode === "codex" && codex.status !== "ready") { setView("connect"); return; }
         consumedInitialRequestRef.current = initialRequest;
         onInitialRequestConsumed?.();
         void sendMessage(initialRequest.prompt, initialRequest.references, initialRequest.skills, initialRequest.skills.length > 0);
-    }, [initialRequest, onInitialRequestConsumed]);
+    }, [initialRequest, onInitialRequestConsumed, mode, codex.status, isRunning]);
 
     const submit = async (nextPrompt = prompt, referenceIds = composerReferenceIds) => {
         const text = nextPrompt.trim();
