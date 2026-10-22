@@ -366,7 +366,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig | null>(null);
-    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"] } | null>(null);
+    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("select");
     const [size, setSize] = useState({ width: 1200, height: 720 });
@@ -2944,7 +2944,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setAgentConfig((current) => ({ ...(current || resolvedAgentConfig), ...patch }));
     }, [resolvedAgentConfig]);
 
-    const startCodexImageIteration = useCallback((nodeId: string, prompt: string) => {
+    const startCodexImageGeneration = useCallback((nodeId: string, prompt: string) => {
         const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
         if (!imageNode || !prompt.trim()) return;
         const upstream = buildNodeMentionReferences(imageNode, nodesRef.current, connectionsRef.current)
@@ -2955,11 +2955,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             return source && content ? [{ id: source.id, type: source.type, title: source.title, label: reference.label, ...content }] : [];
         });
         const ownContent = assistantReferenceContentFromNode(imageNode);
-        if (ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
+        const hasCurrentImage = Boolean(ownContent?.dataUrl || ownContent?.url);
+        if (hasCurrentImage && ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
+        const requestPrompt = hasCurrentImage
+            ? `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n本轮附图包含上游连接的图片素材；最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`
+            : `请使用 Codex 内置 ImageGen，根据本次提示词生成画布图片节点「${imageNode.title}」。\n\n本次生成提示词：\n${prompt.trim()}\n\n当前节点为空，是本次生成的目标，不是参考图。${references.length ? "本轮附图是画布连接的参考图片，请结合提示词使用。" : "本次从零开始，不提供参考图，请纯文生图。"}生成后由系统自动将图片保存到当前空图片节点。不要调用画布的 generate_image 或 edit_image 工具。`;
         setInitialAgentRequest({
-            prompt: `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n本轮附图包含上游连接的图片素材；列表最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`,
+            prompt: requestPrompt,
             references,
             skills: [],
+            ...(!hasCurrentImage ? { imageTargetNodeId: imageNode.id } : {}),
         });
         handleAgentConfigChange({ mode: "codex" });
         setAssistantMounted(true);
@@ -4153,7 +4158,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         [screenToCanvas, size.height, size.width],
     );
 
-    const saveCodexImageToCanvas = useCallback(async ({ dataUrl, prompt, sourceNodeIds }: { dataUrl: string; prompt: string; sourceNodeIds: string[] }, signal?: AbortSignal) => {
+    const saveCodexImageToCanvas = useCallback(async ({ dataUrl, prompt, sourceNodeIds, imageTargetNodeId }: { dataUrl: string; prompt: string; sourceNodeIds: string[]; imageTargetNodeId?: string }, signal?: AbortSignal) => {
         if (signal?.aborted) return;
         const image = await uploadImage(dataUrl);
         if (signal?.aborted) return;
@@ -4161,6 +4166,25 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         const sourceNodes = [...new Set(sourceNodeIds)]
             .map((id) => nodesRef.current.find((node) => node.id === id))
             .filter((node): node is CanvasNodeData => Boolean(node && isCanvasReferenceNode(node)));
+        const imagePrompt = prompt || "Codex Image";
+        const imageTarget = imageTargetNodeId ? nodesRef.current.find((node) => node.id === imageTargetNodeId && node.type === CanvasNodeType.Image && !node.metadata?.content) : undefined;
+        if (imageTarget) {
+            const nextNodes = nodesRef.current.map((node): CanvasNodeData => node.id === imageTarget.id ? {
+                ...node,
+                title: imagePrompt.slice(0, 32),
+                width: nodeSize.width,
+                height: nodeSize.height,
+                metadata: { ...node.metadata, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
+            } : node);
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
+            const selection = new Set([imageTarget.id]);
+            selectedNodeIdsRef.current = selection;
+            setSelectedNodeIds(selection);
+            setSelectedConnectionId(null);
+            setDialogNodeId(imageTarget.id);
+            return;
+        }
         const source = sourceNodes.length
             ? sourceNodes.reduce((rightmost, node) => node.position.x + node.width > rightmost.position.x + rightmost.width ? node : rightmost)
             : null;
@@ -4183,7 +4207,6 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         }
         center ||= { x: startX, y: Math.max(fallbackCenter?.y || 0, ...nodesRef.current.map((node) => node.position.y + node.height + gapY + nodeSize.height / 2)) };
         const id = `image-${nanoid()}`;
-        const imagePrompt = prompt || "Codex Image";
         const node: CanvasNodeData = {
             id,
             type: CanvasNodeType.Image,
@@ -4455,7 +4478,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                             if (panelNode.metadata?.status === "stopped" && !prompt.trim()) void handleRetryNode(panelNode);
                                             else void handleGenerateNode(nodeId, mode, prompt);
                                         }}
-                                        onCodexGenerate={startCodexImageIteration}
+                                        onCodexGenerate={startCodexImageGeneration}
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}

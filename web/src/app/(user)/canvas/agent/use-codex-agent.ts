@@ -26,7 +26,9 @@ type ActiveRun = {
 };
 const CONNECTION_KEY = "canvas-codex-connection";
 const defaultConnection = { endpoint: "http://127.0.0.1:3210", token: "" };
-const agentTools = [...CANVAS_AGENT_TOOLS, CANVAS_AGENT_SKILL_FILE_TOOL].map(({ function: tool }) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters }));
+const agentTools = [...CANVAS_AGENT_TOOLS, CANVAS_AGENT_SKILL_FILE_TOOL]
+    .filter(({ function: tool }) => tool.name !== "generate_image" && tool.name !== "edit_image")
+    .map(({ function: tool }) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters }));
 const stopped = () => new DOMException("Agent 已停止", "AbortError");
 
 export function useCodexAgent(options: {

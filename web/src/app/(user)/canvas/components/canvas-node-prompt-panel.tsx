@@ -143,8 +143,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : null}
                 </div>
                 {node.type === CanvasNodeType.Image && onCodexGenerate ? (
-                    <Tooltip title="使用 Codex 内置 ImageGen 迭代，原图会保留">
-                        <Button type="text" className="!h-10 shrink-0 !rounded-full !px-2.5" style={{ color: theme.node.text }} icon={<Sparkles className="size-4" />} disabled={generating || isStopping || !prompt.trim()} onClick={() => onCodexGenerate(node.id, prompt.trim())} aria-label="Codex 迭代">Codex 迭代</Button>
+                    <Tooltip title="无原图时按提示词生成，有原图时继续迭代；原图保留">
+                        <Button type="text" className="!h-10 shrink-0 !rounded-full !px-2.5" style={{ color: theme.node.text }} icon={<Sparkles className="size-4" />} disabled={generating || isStopping || !prompt.trim()} onClick={() => onCodexGenerate(node.id, prompt.trim())} aria-label="Codex 生图">Codex 生图</Button>
                     </Tooltip>
                 ) : null}
                 <Button

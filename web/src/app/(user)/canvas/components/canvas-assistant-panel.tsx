@@ -97,10 +97,10 @@ type CanvasAssistantPanelProps = {
     onOpenAssets: () => void;
     getAgentContext: (state: CanvasAgentState) => CanvasAgentContext;
     onExecuteAction: (action: CanvasAgentAction, messageReferenceNodeIds: string[]) => Promise<CanvasAgentToolResult>;
-    onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[] }, signal?: AbortSignal) => Promise<void>;
+    onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[]; imageTargetNodeId?: string }, signal?: AbortSignal) => Promise<void>;
     onCollapseStart: () => void;
     onCollapse: () => void;
-    initialRequest?: { prompt: string; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[] } | null;
+    initialRequest?: { prompt: string; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[]; imageTargetNodeId?: string } | null;
     onInitialRequestConsumed?: () => void;
 };
 
@@ -403,7 +403,7 @@ export function CanvasAssistantPanel({
         </>
     ) : undefined;
 
-    const sendMessage = async (text: string, savedReferences?: CanvasAssistantReference[], skillOverride?: CanvasAgentSkillSelection[] | null, showSelectedSkills = skillOverride === undefined && selectedSkills.length > 0) => {
+    const sendMessage = async (text: string, savedReferences?: CanvasAssistantReference[], skillOverride?: CanvasAgentSkillSelection[] | null, showSelectedSkills = skillOverride === undefined && selectedSkills.length > 0, imageTargetNodeId?: string) => {
         if (abortRef.current) return;
         if (mode === "codex" && codex.status !== "ready") { setView("connect"); appMessage.info("请先连接本地 Codex 服务"); return; }
         const session = activeSession || createSession(mode);
@@ -485,7 +485,7 @@ export function CanvasAssistantPanel({
                 ...input, threadId: session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId })),
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
-                onImageGenerated: onCodexImageGenerated ? (dataUrl, imagePrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt, sourceNodeIds: messageReferenceNodeIds }, signal) : undefined,
+                onImageGenerated: onCodexImageGenerated ? (dataUrl, imagePrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
             }) : runCanvasAgent;
             const result = await run({
                 config: requestConfig,
@@ -542,7 +542,7 @@ export function CanvasAssistantPanel({
         if (mode === "codex" && codex.status !== "ready") { setView("connect"); return; }
         consumedInitialRequestRef.current = initialRequest;
         onInitialRequestConsumed?.();
-        void sendMessage(initialRequest.prompt, initialRequest.references, initialRequest.skills, initialRequest.skills.length > 0);
+        void sendMessage(initialRequest.prompt, initialRequest.references, initialRequest.skills, initialRequest.skills.length > 0, initialRequest.imageTargetNodeId);
     }, [initialRequest, onInitialRequestConsumed, mode, codex.status, isRunning]);
 
     const submit = async (nextPrompt = prompt, referenceIds = composerReferenceIds) => {
