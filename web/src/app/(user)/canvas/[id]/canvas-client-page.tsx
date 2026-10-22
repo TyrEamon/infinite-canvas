@@ -4902,6 +4902,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             {assistantMounted ? (
                 <CanvasAssistantPanel
                     canvasId={projectId}
+                    open={agentPanel.open}
                     nodes={nodes}
                     selectedNodeIds={selectedNodeIds}
                     referenceNodeClick={agentReferenceNodeClick}
@@ -4927,7 +4928,6 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onCollapseStart={() =>
                         setAgentPanel((current) => ({ ...current, open: false }))
                     }
-                    onCollapse={() => setAssistantMounted(false)}
                     initialRequest={initialAgentRequest}
                     onInitialRequestConsumed={() => setInitialAgentRequest(null)}
                 />

@@ -81,6 +81,7 @@ const ASSISTANT_NODE_STATUS_COLOR: Record<string, string> = {
 
 type CanvasAssistantPanelProps = {
     canvasId: string;
+    open: boolean;
     nodes: CanvasNodeData[];
     selectedNodeIds: Set<string>;
     referenceNodeClick: { nodeId: string | null; version: number };
@@ -100,7 +101,6 @@ type CanvasAssistantPanelProps = {
     onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[]; imageTargetNodeId?: string }, signal?: AbortSignal) => Promise<void>;
     onCodexImageGenerationState?: (nodeId: string, running: boolean) => void;
     onCollapseStart: () => void;
-    onCollapse: () => void;
     initialRequest?: { prompt: string; imagePrompt?: string; optimizeImagePrompt?: boolean; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[]; imageTargetNodeId?: string } | null;
     onInitialRequestConsumed?: () => void;
 };
@@ -115,6 +115,7 @@ type CodexConfirmation = { id: string; title: string; content: ReactNode; action
 
 export function CanvasAssistantPanel({
     canvasId,
+    open,
     nodes,
     selectedNodeIds,
     referenceNodeClick,
@@ -134,7 +135,6 @@ export function CanvasAssistantPanel({
     onCodexImageGenerated,
     onCodexImageGenerationState,
     onCollapseStart,
-    onCollapse,
     initialRequest,
     onInitialRequestConsumed,
 }: CanvasAssistantPanelProps) {
@@ -155,8 +155,8 @@ export function CanvasAssistantPanel({
     const [checkedChatIds, setCheckedChatIds] = useState<string[]>([]);
     const [deleteChatIds, setDeleteChatIds] = useState<string[]>([]);
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [closing, setClosing] = useState(false);
     const [resizing, setResizing] = useState(false);
+    const closing = !open;
     const [composerReferenceIds, setComposerReferenceIds] = useState<string[]>([]);
     const [selectedSkills, setSelectedSkills] = useState<CanvasAgentSkillSelection[]>([]);
     const [removedReferenceIds, setRemovedReferenceIds] = useState<Set<string>>(new Set());
@@ -578,14 +578,14 @@ export function CanvasAssistantPanel({
     };
 
     const collapse = () => {
-        setClosing(true);
         onCollapseStart();
-        window.setTimeout(onCollapse, PANEL_MOTION_MS);
     };
 
     return (
         <motion.div
             className="flex shrink-0"
+            aria-hidden={!open}
+            inert={!open}
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: closing ? 0 : width + 1, opacity: closing ? 0 : 1 }}
             transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
