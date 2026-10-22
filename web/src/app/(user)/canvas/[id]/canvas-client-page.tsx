@@ -366,7 +366,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig | null>(null);
-    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
+    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; imagePrompt?: string; optimizeImagePrompt?: boolean; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("select");
     const [size, setSize] = useState({ width: 1200, height: 720 });
@@ -2944,7 +2944,24 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setAgentConfig((current) => ({ ...(current || resolvedAgentConfig), ...patch }));
     }, [resolvedAgentConfig]);
 
-    const startCodexImageGeneration = useCallback((nodeId: string, prompt: string) => {
+    const setCodexImageGenerationState = useCallback((nodeId: string, running: boolean) => {
+        const node = nodesRef.current.find((item) => item.id === nodeId && item.type === CanvasNodeType.Image);
+        if (!node) return;
+        const nextNodes = nodesRef.current.map((item): CanvasNodeData => item.id === nodeId ? {
+            ...item,
+            metadata: {
+                ...item.metadata,
+                status: running ? NODE_STATUS_LOADING : undefined,
+                startedAt: running ? Date.now() : undefined,
+                progress: undefined,
+                errorDetails: undefined,
+            },
+        } : item);
+        nodesRef.current = nextNodes;
+        setNodes(nextNodes);
+    }, []);
+
+    const startCodexImageGeneration = useCallback((nodeId: string, prompt: string, optimizeImagePrompt = false) => {
         const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
         if (!imageNode || !prompt.trim()) return;
         const upstream = buildNodeMentionReferences(imageNode, nodesRef.current, connectionsRef.current)
@@ -2957,14 +2974,20 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         const ownContent = assistantReferenceContentFromNode(imageNode);
         const hasCurrentImage = Boolean(ownContent?.dataUrl || ownContent?.url);
         if (hasCurrentImage && ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
+        const imageSettingsPrompt = buildCodexImageSettingsPrompt(buildGenerationConfig(effectiveConfig, imageNode, "image"));
+        const promptRule = optimizeImagePrompt
+            ? "先优化扩写提示词，但必须保留原文中的主体、服装、场景、构图、标识和负面约束；不得引入其他主题，再使用优化后的提示词生图。以下画布图像设置是额外的生成要求，优化时不得移除或改写。"
+            : "将原文作为完整提示词直接生图；不要自行翻译、优化、扩写或改变主体、服装、场景、构图和约束。";
         const requestPrompt = hasCurrentImage
-            ? `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n本轮附图包含上游连接的图片素材；最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`
-            : `请使用 Codex 内置 ImageGen，根据本次提示词生成画布图片节点「${imageNode.title}」。\n\n本次生成提示词：\n${prompt.trim()}\n\n当前节点为空，是本次生成的目标，不是参考图。${references.length ? "本轮附图是画布连接的参考图片，请结合提示词使用。" : "本次从零开始，不提供参考图，请纯文生图。"}生成后由系统自动将图片保存到当前空图片节点。不要调用画布的 generate_image 或 edit_image 工具。`;
+            ? `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n${promptRule}\n\n${imageSettingsPrompt}\n\n本轮附图包含上游连接的图片素材；最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`
+            : `请使用 Codex 内置 ImageGen，根据本次提示词生成画布图片节点「${imageNode.title}」。\n\n本次生成提示词：\n${prompt.trim()}\n\n${promptRule}\n\n${imageSettingsPrompt}\n\n当前节点为空，是本次生成的目标，不是参考图。${references.length ? "本轮附图是画布连接的参考图片，请结合提示词使用。" : "本次从零开始，不提供参考图，请纯文生图。"}生成后由系统自动将图片保存到当前空图片节点。不要调用画布的 generate_image 或 edit_image 工具。`;
         setInitialAgentRequest({
             prompt: requestPrompt,
+            imagePrompt: prompt.trim(),
+            optimizeImagePrompt,
             references,
             skills: [],
-            ...(!hasCurrentImage ? { imageTargetNodeId: imageNode.id } : {}),
+            imageTargetNodeId: imageNode.id,
         });
         handleAgentConfigChange({ mode: "codex" });
         setAssistantMounted(true);
@@ -4167,14 +4190,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             .map((id) => nodesRef.current.find((node) => node.id === id))
             .filter((node): node is CanvasNodeData => Boolean(node && isCanvasReferenceNode(node)));
         const imagePrompt = prompt || "Codex Image";
-        const imageTarget = imageTargetNodeId ? nodesRef.current.find((node) => node.id === imageTargetNodeId && node.type === CanvasNodeType.Image && !node.metadata?.content) : undefined;
+        const imageTargetSource = imageTargetNodeId ? nodesRef.current.find((node) => node.id === imageTargetNodeId && node.type === CanvasNodeType.Image) : undefined;
+        const imageTarget = imageTargetSource && !imageTargetSource.metadata?.content ? imageTargetSource : undefined;
+        const imageSettings = imageTargetSource ? { quality: imageTargetSource.metadata?.quality, size: imageTargetSource.metadata?.size, count: imageTargetSource.metadata?.count } : {};
         if (imageTarget) {
             const nextNodes = nodesRef.current.map((node): CanvasNodeData => node.id === imageTarget.id ? {
                 ...node,
                 title: imagePrompt.slice(0, 32),
                 width: nodeSize.width,
                 height: nodeSize.height,
-                metadata: { ...node.metadata, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
+                metadata: { ...node.metadata, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation", status: undefined, startedAt: undefined, progress: undefined, errorDetails: undefined },
             } : node);
             nodesRef.current = nextNodes;
             setNodes(nextNodes);
@@ -4214,7 +4239,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             position: { x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2 },
             width: nodeSize.width,
             height: nodeSize.height,
-            metadata: { ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
+            metadata: { ...imageSettings, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
         };
         const nextNodes = [...nodesRef.current, node];
         const nextConnections = [
@@ -4898,6 +4923,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     getAgentContext={getCanvasAgentContext}
                     onExecuteAction={executeCanvasAgentAction}
                     onCodexImageGenerated={saveCodexImageToCanvas}
+                    onCodexImageGenerationState={setCodexImageGenerationState}
                     onCollapseStart={() =>
                         setAgentPanel((current) => ({ ...current, open: false }))
                     }
@@ -5997,6 +6023,28 @@ function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefine
         geminiTtsVoice: node?.metadata?.geminiTtsVoice || config.geminiTtsVoice || defaultConfig.geminiTtsVoice,
         count: String(node?.metadata?.count || (mode === "image" ? config.canvasImageCount || config.count : config.count) || defaultConfig.count),
     };
+}
+
+function buildCodexImageSettingsPrompt(config: AiConfig) {
+    const count = getGenerationCount(config.count);
+    const size = config.size || "auto";
+    const dimensions = size.match(/^(\d+)x(\d+)$/);
+    const sizeInstruction = size === "auto"
+        ? "根据提示词内容选择合适的画幅和尺寸。"
+        : dimensions
+            ? `目标尺寸约 ${dimensions[1]}×${dimensions[2]} 像素，宽高比约 ${simplifyAspectRatio(Number(dimensions[1]), Number(dimensions[2]))}。`
+            : `画幅比例为 ${size}。`;
+    const qualityInstruction = ({ auto: "自动选择合适的质量。", high: "尽可能生成高质量、细节丰富的图像。", medium: "使用标准质量和细节程度。", low: "优先快速生成草稿级图像。" } as Record<string, string>)[config.quality || "auto"] || `质量偏好：${config.quality}。`;
+    const countInstruction = count > 1
+        ? `共需 ${count} 张独立图片。请对同一提示词分别调用 ImageGen ${count} 次，每次生成并返回一张；保持主体与整体要求一致，只让细节或构图有自然变化。`
+        : "共需 1 张图片。";
+    return `画布图像设置（自动带入，请尽量遵循；Codex ImageGen 不支持锁定精确像素、质量或一次输出多张）：\n- ${sizeInstruction}\n- ${qualityInstruction}\n- ${countInstruction}`;
+}
+
+function simplifyAspectRatio(width: number, height: number) {
+    const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+    const divisor = Math.max(1, gcd(width, height));
+    return `${width / divisor}:${height / divisor}`;
 }
 
 function resetInterruptedGeneration(nodes: CanvasNodeData[]) {

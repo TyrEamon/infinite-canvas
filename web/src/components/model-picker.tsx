@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { Cpu } from "lucide-react";
+import { Cpu, Sparkles } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { useAutoDLWorkflowNames } from "@/hooks/use-autodl-workflow";
@@ -23,18 +23,23 @@ type ModelPickerProps = {
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
+    includeCodexImageGen?: boolean;
+    codexImageGenSelected?: boolean;
+    onCodexImageGenSelect?: (selected: boolean) => void;
 };
 
 type PickerBase = { key: string; channelId?: string; channelName: string; protocol?: string; baseUrl?: string };
 type PickerOption = (PickerBase & { model: string }) | (PickerBase & { model: ""; workflowRef: WorkflowRef; label: string });
+const CODEX_IMAGE_GEN_VALUE = "__codex_imagegen__";
 
-export function ModelPicker({ config, value, channelId, capability, onChange, workflowRef, onWorkflowChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, channelId, capability, onChange, workflowRef, onWorkflowChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig, includeCodexImageGen = false, codexImageGenSelected = false, onCodexImageGenSelect }: ModelPickerProps) {
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const token = useUserStore((state) => state.token);
     const userReady = useUserStore((state) => state.isReady);
     const publicSettings = useConfigStore((state) => state.publicSettings);
     const workflowEnabled = Boolean(onWorkflowChange && capability && capability !== "text");
+    const showCodexImageGenOption = includeCodexImageGen && capability === "image";
     const channelOptions = useMemo<PickerOption[]>(() => {
         const channels =
             config.channelMode === "remote"
@@ -55,10 +60,11 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
         return channelOptions.find((item) => item.model === value && item.channelId === channelId) || channelOptions.find((item) => item.model === value);
     }, [channelId, channelOptions, value, workflowEnabled, workflowRef]);
     const options = channelOptions;
-    const current = workflowRef && workflowEnabled ? (currentOption && "label" in currentOption ? currentOption.label : "") : value || "";
-    const currentValue = current && currentOption ? currentOption.key : "";
+    const current = codexImageGenSelected && showCodexImageGenOption ? "Codex ImageGen" : workflowRef && workflowEnabled ? (currentOption && "label" in currentOption ? currentOption.label : "") : value || "";
+    const currentValue = codexImageGenSelected && showCodexImageGenOption ? CODEX_IMAGE_GEN_VALUE : current && currentOption ? currentOption.key : "";
 
 	useEffect(() => {
+		if (codexImageGenSelected) return;
 		if (workflowRef && workflowEnabled) {
 			const workflowOptionsReady = workflowRef.scope === "system"
 				? publicSettings !== null
@@ -69,7 +75,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
             return;
         }
         if (value && currentOption?.channelId && !("workflowRef" in currentOption) && channelId !== currentOption.channelId) onChange(value, currentOption.channelId);
-	}, [channelId, channelOptions, config.workflowSyncTouched, currentOption, onChange, onWorkflowChange, publicSettings, token, userReady, value, workflowEnabled, workflowRef]);
+	}, [channelId, channelOptions, codexImageGenSelected, config.workflowSyncTouched, currentOption, onChange, onWorkflowChange, publicSettings, token, userReady, value, workflowEnabled, workflowRef]);
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -84,7 +90,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
             open={open}
             value={current ? currentValue : ""}
             onOpenChange={(nextOpen) => {
-                if (nextOpen && !options.length && config.channelMode === "local") {
+                if (nextOpen && !options.length && !showCodexImageGenOption && config.channelMode === "local") {
                     onMissingConfig?.();
                     return;
                 }
@@ -92,6 +98,11 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 setOpen(nextOpen);
             }}
             onValueChange={(nextValue) => {
+                if (nextValue === CODEX_IMAGE_GEN_VALUE) {
+                    onCodexImageGenSelect?.(true);
+                    return;
+                }
+                onCodexImageGenSelect?.(false);
                 const option = options.find((item) => item.key === nextValue);
                 if (!option) return;
                 if ("workflowRef" in option) onWorkflowChange?.(option.workflowRef);
@@ -109,8 +120,8 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 onPointerDown={(event) => event.stopPropagation()}
                 title={workflowRef && workflowEnabled && !currentOption ? "工作流已停用、未公开或删除，请重新选择" : current || placeholder}
             >
-                <ModelIcon model={current} />
-                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{workflowRef && workflowEnabled ? current || "工作流已停用、未公开或删除，请重新选择" : modelLabel(current, currentOption) || placeholder}</span>
+                {codexImageGenSelected && showCodexImageGenOption ? <Sparkles className="size-4 shrink-0" /> : <ModelIcon model={current} />}
+                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{codexImageGenSelected && showCodexImageGenOption ? current : workflowRef && workflowEnabled ? current || "工作流已停用、未公开或删除，请重新选择" : modelLabel(current, currentOption) || placeholder}</span>
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
@@ -122,12 +133,23 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
             >
-                {options.length ? (
-                    options.map((option) => (
-                        <SelectItem key={option.key} value={option.key} textValue={`${"workflowRef" in option ? option.label : modelLabel(option.model, option)} ${option.model} ${option.channelName}`}>
-                            <ModelLabel model={"workflowRef" in option ? option.workflowRef.workflowId : option.model} label={"workflowRef" in option ? `工作流 · ${option.label}` : modelLabel(option.model, option)} channelName={option.channelName} />
-                        </SelectItem>
-                    ))
+                {options.length || showCodexImageGenOption ? (
+                    <>
+                        {options.map((option) => (
+                            <SelectItem key={option.key} value={option.key} textValue={`${"workflowRef" in option ? option.label : modelLabel(option.model, option)} ${option.model} ${option.channelName}`}>
+                                <ModelLabel model={"workflowRef" in option ? option.workflowRef.workflowId : option.model} label={"workflowRef" in option ? `工作流 · ${option.label}` : modelLabel(option.model, option)} channelName={option.channelName} />
+                            </SelectItem>
+                        ))}
+                        {showCodexImageGenOption ? (
+                            <SelectItem value={CODEX_IMAGE_GEN_VALUE} textValue="Codex ImageGen 本机 Codex">
+                                <span className="flex min-w-0 items-center gap-2">
+                                    <Sparkles className="size-4 shrink-0" />
+                                    <span>Codex ImageGen</span>
+                                    <span className="ml-auto text-xs opacity-50">Codex 内置</span>
+                                </span>
+                            </SelectItem>
+                        ) : null}
+                    </>
                 ) : (
                     <SelectItem value="__empty__" disabled>
                         {config.channelMode === "remote" ? "暂无可用模型" : "请先到配置里拉取模型列表"}

@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { ChevronRight, Image as ImageIcon, Maximize2, Music2, Pause, Play, RefreshCw, Star, Video } from "lucide-react";
+import { ChevronRight, Image as ImageIcon, LoaderCircle, Maximize2, Music2, Pause, Play, RefreshCw, Star, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
@@ -455,11 +455,23 @@ function NodeContent(props: NodeContentRendererProps) {
             <button type="button" className="rounded-full border px-3 py-1.5 text-xs" style={{ color: props.theme.node.text, background: props.theme.toolbar.panel, borderColor: props.theme.toolbar.border }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); props.onRetry?.(props.node); }}>重新生成</button>
         </div>
     );
-    if ((props.node.metadata?.status === "loading" || props.node.metadata?.status === "stopping") && (props.node.type !== CanvasNodeType.Text || !props.node.metadata.content)) return <LoadingContent node={props.node} theme={props.theme} now={props.now} />;
+    const codexImageWithContentLoading = props.node.type === CanvasNodeType.Image && props.node.metadata?.codexImageGen && props.node.metadata.status === "loading" && Boolean(props.node.metadata.content);
+    if ((props.node.metadata?.status === "loading" || props.node.metadata?.status === "stopping") && (props.node.type !== CanvasNodeType.Text || !props.node.metadata.content) && !codexImageWithContentLoading) return <LoadingContent node={props.node} theme={props.theme} now={props.now} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
 
     const Renderer = nodeContentRenderers[props.node.type];
-    return Renderer ? <Renderer {...props} /> : <UnknownNodeContent theme={props.theme} />;
+    const content = Renderer ? <Renderer {...props} /> : <UnknownNodeContent theme={props.theme} />;
+    return codexImageWithContentLoading ? (
+        <div className="relative h-full w-full">
+            {content}
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center" aria-live="polite">
+                <div className="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs shadow-lg backdrop-blur" style={{ background: props.theme.toolbar.panel, borderColor: props.theme.toolbar.border, color: props.theme.node.text }}>
+                    <LoaderCircle className="size-4 animate-spin" />
+                    Codex 正在生成新版本
+                </div>
+            </div>
+        </div>
+    ) : content;
 }
 
 const nodeContentRenderers = {
@@ -514,7 +526,7 @@ function LoadingContent({ node, theme, now }: Pick<NodeContentRendererProps, "no
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
-            <span className="text-[10px] tracking-[0.2em]">{stopLabel || (progress > 0 ? `生成中 ${progress}%` : "生成中")}</span>
+            <span className="text-[10px] tracking-[0.2em]">{stopLabel || (node.metadata?.codexImageGen ? "Codex 正在生成" : progress > 0 ? `生成中 ${progress}%` : "生成中")}</span>
             <span className="rounded-full border px-2 py-1 text-xs tracking-normal" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
                 {formatDuration(elapsedMs)}
             </span>

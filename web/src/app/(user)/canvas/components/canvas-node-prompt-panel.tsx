@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ArrowUp, LoaderCircle, Maximize2, Sparkles, Square } from "lucide-react";
-import { Button, Modal, Tooltip } from "antd";
+import { Button, Modal, Switch, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { useAutoDLWorkflow } from "@/hooks/use-autodl-workflow";
@@ -32,7 +32,7 @@ type CanvasNodePromptPanelProps = {
     onPromptChange: (nodeId: string, prompt: string) => void;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
-    onCodexGenerate?: (nodeId: string, prompt: string) => void;
+    onCodexGenerate?: (nodeId: string, prompt: string, optimizePrompt: boolean) => void;
     onStop: (nodeId: string) => void;
     mentionReferences?: CanvasResourceReference[];
     connectedNodes?: CanvasNodeData[];
@@ -50,6 +50,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = defaultMode(node.type);
     const config = buildNodeConfig(globalConfig, node, mode);
+    const codexImageGenSelected = Boolean(node.type === CanvasNodeType.Image && node.metadata?.codexImageGen && onCodexGenerate);
     const { data: autodlWorkflow } = useAutoDLWorkflow(config, mode === "video" ? config.model : "");
     const isPanorama = isPanoramaNodeType(node.type);
     const mediaLoading = (isCanvasImageNodeType(node.type) || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.status === "loading";
@@ -83,6 +84,10 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const submit = () => {
         const text = prompt.trim();
         if (!canSubmit || generating || isStopping) return;
+        if (codexImageGenSelected) {
+            onCodexGenerate?.(node.id, text, Boolean(node.metadata?.codexPromptOptimization));
+            return;
+        }
         onGenerate(node.id, mode, text);
     };
 
@@ -106,24 +111,36 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 placeholder={isPanorama ? "描述想生成的全景，或上传/连接图片作为参考" : promptPlaceholder(mode, hasImageContent, hasTextContent)}
             />
 
-            <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     <Tooltip title="放大编辑">
                         <Button type="text" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !bg-transparent !p-0" style={{ color: theme.node.text }} icon={<Maximize2 className="size-3.5" />} onClick={() => setExpanded(true)} aria-label="放大编辑" />
                     </Tooltip>
                     <CanvasPromptLibrary onSelect={updatePrompt} />
                     {mode === "image" ? (
                         <>
-                            <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.imageChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId })} capability="image" onMissingConfig={() => openConfigDialog(true)} />
-                            <CanvasImageSettingsPopover
-                                config={node.metadata?.workflowRef ? { ...config, model: "" } : config}
-                                placement="topLeft"
-                                buttonClassName="!h-10 !w-[148px] !shrink-0 !justify-start !rounded-full !px-3"
-                                onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
-                                onMissingConfig={() => openConfigDialog(true)}
-                                onOpenChange={onImageSettingsOpenChange}
-                                showSize={!isPanorama}
-                            />
+                            <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.imageChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef, codexImageGen: false })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId, codexImageGen: false })} capability="image" onMissingConfig={() => openConfigDialog(true)} includeCodexImageGen={node.type === CanvasNodeType.Image && Boolean(onCodexGenerate)} codexImageGenSelected={codexImageGenSelected} onCodexImageGenSelect={(selected) => onConfigChange(node.id, { codexImageGen: selected, ...(selected ? { workflowRef: undefined } : {}) })} />
+                            {codexImageGenSelected ? (
+                                <Tooltip title="开启后 Codex 会先优化提示词；关闭时按原提示词生成。">
+                                    <label className="inline-flex h-10 shrink-0 cursor-pointer items-center gap-2 px-1 text-xs" style={{ color: theme.node.text }}>
+                                        <span>AI 优化</span>
+                                        <Switch size="small" checked={Boolean(node.metadata?.codexPromptOptimization)} aria-label="Codex 生图前优化提示词" onChange={(enabled) => onConfigChange(node.id, { codexPromptOptimization: enabled })} />
+                                    </label>
+                                </Tooltip>
+                            ) : null}
+                            <Tooltip title={codexImageGenSelected ? "Codex 会把这些设置作为生成要求；实际像素、质量和张数可能无法严格保证。" : undefined}>
+                                <span className="inline-flex">
+                                    <CanvasImageSettingsPopover
+                                        config={node.metadata?.workflowRef ? { ...config, model: "" } : config}
+                                        placement="topLeft"
+                                        buttonClassName="!h-10 !w-[148px] !shrink-0 !justify-start !rounded-full !px-3"
+                                        onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
+                                        onMissingConfig={() => openConfigDialog(true)}
+                                        onOpenChange={onImageSettingsOpenChange}
+                                        showSize={!isPanorama}
+                                    />
+                                </span>
+                            </Tooltip>
                         </>
                     ) : mode === "video" ? (
                         <>
@@ -138,26 +155,21 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : (
                         <ModelPicker config={config} value={config.model} channelId={config.textChannelId} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId })} capability="text" onMissingConfig={() => openConfigDialog(true)} />
                     )}
-                    {mode === "video" || (mode === "image" && !isPanorama) ? (
+                    {mode === "video" || (mode === "image" && !isPanorama && !codexImageGenSelected) ? (
                         <CanvasCameraControl value={node.metadata?.cameraControl} onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })} buttonClassName="!h-10 !min-w-[92px] !justify-start !rounded-full !px-3" />
                     ) : null}
                 </div>
-                {node.type === CanvasNodeType.Image && onCodexGenerate ? (
-                    <Tooltip title="无原图时按提示词生成，有原图时继续迭代；原图保留">
-                        <Button type="text" className="!h-10 shrink-0 !rounded-full !px-2.5" style={{ color: theme.node.text }} icon={<Sparkles className="size-4" />} disabled={generating || isStopping || !prompt.trim()} onClick={() => onCodexGenerate(node.id, prompt.trim())} aria-label="Codex 生图">Codex 生图</Button>
-                    </Tooltip>
-                ) : null}
                 <Button
                     type="primary"
                     danger={showStop}
-                    className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
+                    className="ml-auto !h-10 !min-w-16 shrink-0 !rounded-full !px-3"
                     disabled={(isStopping && !stopFailed) || (!canStop && (generating || !canSubmit))}
                     onClick={canStop ? () => onStop(node.id) : submit}
-                    aria-label={canStop ? stopFailed ? "重试停止" : "停止" : isStopping ? "停止中" : "生成"}
+                    aria-label={canStop ? stopFailed ? "重试停止" : "停止" : isStopping ? "停止中" : codexImageGenSelected ? "Codex ImageGen 生成" : "生成"}
                 >
                     <span className="relative inline-flex">
                         <span className={`flex items-center gap-1.5${showStop ? " invisible" : ""}`}>
-                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums"><CreditSymbol />{credits.toLocaleString()}</span>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">{codexImageGenSelected ? <Sparkles className="size-4" /> : <><CreditSymbol />{credits.toLocaleString()}</>}</span>
                             {generating ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
                         </span>
                         {showStop ? <span className="absolute inset-0 flex items-center justify-center">

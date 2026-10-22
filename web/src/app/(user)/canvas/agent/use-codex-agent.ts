@@ -177,7 +177,15 @@ export function useCodexAgent(options: {
             } else if (event.method === "item/completed" && params.item?.type === "imageGeneration") {
                 const item = params.item;
                 if (item.status && item.status !== "completed") {
-                    if (item.status === "failed") pending.imageError = new Error("Codex 图片生成失败");
+                    if (item.status === "failed") {
+                        const failure = item.failure;
+                        if (failure?.type === "usageLimitExceeded") {
+                            const resetsAt = typeof failure.resetsAt === "number" ? new Date(failure.resetsAt * 1000).toLocaleString() : "";
+                            pending.imageError = new Error(`Codex 图片生成额度已用完${resetsAt ? `，预计于 ${resetsAt} 重置` : "，请稍后重试"}`);
+                        } else {
+                            pending.imageError = new Error(`Codex 图片生成失败${failure?.type ? `（${failure.type}）` : "，Codex 未返回具体失败原因"}`);
+                        }
+                    }
                     return;
                 }
                 if (!item.result) {
@@ -196,8 +204,14 @@ export function useCodexAgent(options: {
                 const turn = params.turn!;
                 if (pending.finishing) return;
                 pending.finishing = true;
-                void Promise.all(pending.imageTasks).then(() => pending.finish(turn.status === "failed" ? new Error(turn.error?.message || "Codex 执行失败")
-                    : turn.status === "interrupted" ? stopped() : pending.imageError));
+                void Promise.all(pending.imageTasks).then(() => {
+                    const imageError = pending.imageError;
+                    const messages = [...pending.messages.values()].filter(Boolean);
+                    const explanation = imageError && messages[messages.length - 1]?.trim();
+                    pending.finish(turn.status === "failed" ? new Error(turn.error?.message || "Codex 执行失败")
+                        : turn.status === "interrupted" ? stopped()
+                            : imageError && explanation ? new Error(`${imageError.message}\n\nCodex 的说明：\n${explanation}`) : imageError);
+                });
             } else if (event.method === "item/started") {
                 pending.input.onEvent?.({ status: "running", label: "Codex 正在处理" });
             }

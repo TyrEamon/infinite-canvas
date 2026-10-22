@@ -5,7 +5,7 @@ export type CodexRpcEvent = {
     method: string;
     params: Record<string, unknown> & {
         threadId?: string; turnId?: string; itemId?: string; delta?: string;
-        item?: { id: string; type: string; text?: string; status?: string; result?: string; revisedPrompt?: string; savedPath?: string };
+        item?: { id: string; type: string; text?: string; status?: string; result?: string; revisedPrompt?: string; savedPath?: string; failure?: { type: string; limitId?: string; resetsAt?: number | null } };
         turn?: { id: string; status: string; error?: { message: string } };
     };
 };
