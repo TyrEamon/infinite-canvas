@@ -102,6 +102,7 @@ type CanvasAssistantPanelProps = {
     onExecuteAction: (action: CanvasAgentAction, messageReferenceNodeIds: string[]) => Promise<CanvasAgentToolResult>;
     onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[]; imageTargetNodeId?: string }, signal?: AbortSignal) => Promise<void>;
     onCodexImageGenerationState?: (nodeId: string, running: boolean) => void;
+    onCodexPromptOptimized?: (nodeId: string, prompt: string, originalPrompt: string) => void;
     onCollapseStart: () => void;
     initialRequest?: { prompt: string; imagePrompt?: string; optimizeImagePrompt?: boolean; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[]; imageTargetNodeId?: string } | null;
     onInitialRequestConsumed?: () => void;
@@ -136,6 +137,7 @@ export function CanvasAssistantPanel({
     onExecuteAction,
     onCodexImageGenerated,
     onCodexImageGenerationState,
+    onCodexPromptOptimized,
     onCollapseStart,
     initialRequest,
     onInitialRequestConsumed,
@@ -509,12 +511,12 @@ export function CanvasAssistantPanel({
             // 图片节点生成每次使用独立 thread，避免生成图片在后续请求中累积，也不覆盖普通对话的 thread。
             const isolatedImageThread = Boolean(imageTargetNodeId);
             const run = mode === "codex" ? (input: Parameters<typeof runCanvasAgent>[0]) => codex.run({
-                ...input, threadId: isolatedImageThread ? undefined : session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
+                ...input, optimizePromptOnly: optimizeImagePrompt, threadId: isolatedImageThread ? undefined : session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => {
                     if (!isolatedImageThread) updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId }));
                 },
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
-                onImageGenerated: onCodexImageGenerated ? (dataUrl, revisedPrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: optimizeImagePrompt && revisedPrompt !== text ? revisedPrompt : imagePrompt || revisedPrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
+                onImageGenerated: !optimizeImagePrompt && onCodexImageGenerated ? (dataUrl, revisedPrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt || revisedPrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
             }) : runCanvasAgent;
             const result = await run({
                 config: requestConfig,
@@ -526,7 +528,9 @@ export function CanvasAssistantPanel({
                 contextCheckpoint: session.contextCheckpoint,
                 preferredJsonMode: session.jsonToolFallbackKey === jsonToolFallbackKey ? session.jsonToolFallbackMode || "structured-json" : undefined,
                 getContext: getAgentContext,
-                executeAction: (action, signal = controller.signal) => executeCanvasTool(action, messageReferenceNodeIds, activeSkills, mode, signal),
+                executeAction: (action, signal = controller.signal) => optimizeImagePrompt
+                    ? Promise.resolve({ ok: false, code: "optimization_only", message: "本轮只返回优化提示词，不执行画布操作" })
+                    : executeCanvasTool(action, messageReferenceNodeIds, activeSkills, mode, signal),
                 signal: controller.signal,
                 onEvent: (event) => updateMessage(session.id, assistantId, { status: event.status, activity: event.label }),
                 onCheckpoint: (checkpoint) =>
@@ -540,6 +544,10 @@ export function CanvasAssistantPanel({
                         updatedAt: new Date().toISOString(),
                     })),
             });
+            if (optimizeImagePrompt && imageTargetNodeId) {
+                if (!result.reply.trim()) throw new Error("Codex 未返回优化提示词，请重试");
+                onCodexPromptOptimized?.(imageTargetNodeId, result.reply.trim(), imagePrompt || "");
+            }
             updateSession(session.id, (current) => ({
                 ...current,
                 agentState: result.state,

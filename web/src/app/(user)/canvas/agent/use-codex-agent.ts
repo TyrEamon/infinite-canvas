@@ -15,7 +15,7 @@ import {
 
 type Client = ReturnType<typeof createCodexAgentClient>;
 type RunInput = RunCanvasAgentInput & {
-    threadId?: string; serviceId?: string; model?: string; effort?: string;
+    threadId?: string; serviceId?: string; model?: string; effort?: string; optimizePromptOnly?: boolean;
     onThread: (threadId: string, serviceId: string) => void; onText: (text: string) => void;
     onImageGenerated?: (dataUrl: string, prompt: string, signal?: AbortSignal) => Promise<void>;
 };
@@ -307,7 +307,9 @@ export function useCodexAgent(options: {
                 const hasFiles = Boolean(input.activeSkillContents?.some((skill) => skill.source === "system" && skill.hasFiles));
                 const images = input.references.filter((item) => item.dataUrl && /^(data:image\/|https?:\/\/)/.test(item.dataUrl));
                 const imageInstructions = `\n\n画布图片生成要求：当用户在本次画布任务中要求生成或迭代图片时，使用 Codex 内置的 ImageGen 工具，不要调用画布的 generate_image 或 edit_image 工具，也不要使用画布配置的外部生图模型。${images.length ? `若本轮附有图片，将它们作为 ImageGen 的参考图（最多 ${Math.min(images.length, 5)} 张；使用 num_last_images_to_include 参数），按本轮文字要求生成。` : ""}不要默认复用前几轮的图片。本次生成的图片会由系统自动保存为画布图片节点并连接到本轮引用的素材节点。`;
-                const developerInstructions = canvasAgentSystemPrompt(input.config, buildCanvasAgentSkillPrompt(input.initialState.phase, input.userText, input.getContext(input.initialState), skills, input.contextCheckpoint, hasFiles)) + imageInstructions;
+                const developerInstructions = input.optimizePromptOnly
+                    ? "本轮只优化图片提示词。保留用户的主体、服装、场景、构图、标识、原文台词和负面约束，不引入其他主题。参考附图理解身份与构图。只返回完整优化稿正文，不加前言、解释或 Markdown 代码块。不生成图片，不调用 ImageGen、画布工具或其他工具，不修改画布。"
+                    : canvasAgentSystemPrompt(input.config, buildCanvasAgentSkillPrompt(input.initialState.phase, input.userText, input.getContext(input.initialState), skills, input.contextCheckpoint, hasFiles)) + imageInstructions;
                 const { thread } = await link.rpc<{ thread: { id: string } }>(threadId ? "thread/resume" : "thread/start", {
                     ...(threadId ? { threadId } : {}), developerInstructions, ...(input.model ? { model: input.model } : {}),
                 });

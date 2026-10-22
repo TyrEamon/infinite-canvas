@@ -30,7 +30,7 @@ import { captureVideoFrame, type VideoFramePosition } from "../utils/canvas-vide
 import { PANORAMA_IMAGE_SIZE, PANORAMA_NODE_SIZE, buildPanoramaPrompt, isCanvasImageNodeType, isPanoramaNodeType } from "../utils/canvas-panorama";
 import { applyCameraPrompt } from "../utils/canvas-camera";
 import { GROUP_PADDING, findContainingGroupId, findGroupDropTarget, getNodeBounds, snapNodesIntoGroup } from "../utils/canvas-group";
-import { App, Button, Dropdown, Modal, Slider } from "antd";
+import { App, Button, Dropdown, Input, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
 import { isAutoDLConfig } from "@/lib/autodl";
@@ -2961,6 +2961,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setNodes(nextNodes);
     }, []);
 
+    const [optimizedImagePrompt, setOptimizedImagePrompt] = useState<{ nodeId: string; prompt: string; originalPrompt: string } | null>(null);
     const startCodexImageGeneration = useCallback((nodeId: string, prompt: string, optimizeImagePrompt = false) => {
         const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
         if (!imageNode || !prompt.trim()) return;
@@ -2975,14 +2976,12 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         const hasCurrentImage = Boolean(ownContent?.dataUrl || ownContent?.url);
         if (hasCurrentImage && ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
         const imageSettingsPrompt = buildCodexImageSettingsPrompt(buildGenerationConfig(effectiveConfig, imageNode, "image"));
-        const promptRule = optimizeImagePrompt
-            ? "先优化扩写提示词，但必须保留原文中的主体、服装、场景、构图、标识和负面约束；不得引入其他主题，再使用优化后的提示词生图。以下画布图像设置是额外的生成要求，优化时不得移除或改写。"
-            : "将原文作为完整提示词直接生图；不要自行翻译、优化、扩写或改变主体、服装、场景、构图和约束。";
+        const promptRule = "将原文作为完整提示词直接生图；不要自行翻译、优化、扩写或改变主体、服装、场景、构图和约束。";
         const requestPrompt = hasCurrentImage
             ? `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n${promptRule}\n\n${imageSettingsPrompt}\n\n本轮附图包含上游连接的图片素材；最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`
             : `请使用 Codex 内置 ImageGen，根据本次提示词生成画布图片节点「${imageNode.title}」。\n\n本次生成提示词：\n${prompt.trim()}\n\n${promptRule}\n\n${imageSettingsPrompt}\n\n当前节点为空，是本次生成的目标，不是参考图。${references.length ? "本轮附图是画布连接的参考图片，请结合提示词使用。" : "本次从零开始，不提供参考图，请纯文生图。"}生成后由系统自动将图片保存到当前空图片节点。不要调用画布的 generate_image 或 edit_image 工具。`;
         setInitialAgentRequest({
-            prompt: requestPrompt,
+            prompt: optimizeImagePrompt ? `请优化以下图片提示词，只返回完整优化稿正文，供我编辑和决定是否采用。本轮禁止生成图片或修改画布。保留主体、服装、场景、构图、标识和负面约束，不引入其他主题。附图仅用于理解本轮参考。\n\n原提示词：\n${prompt.trim()}\n\n${imageSettingsPrompt}` : requestPrompt,
             imagePrompt: prompt.trim(),
             optimizeImagePrompt,
             references,
@@ -4924,6 +4923,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     getAgentContext={getCanvasAgentContext}
                     onExecuteAction={executeCanvasAgentAction}
                     onCodexImageGenerated={saveCodexImageToCanvas}
+                    onCodexPromptOptimized={(nodeId, prompt, originalPrompt) => setOptimizedImagePrompt({ nodeId, prompt, originalPrompt })}
                     onCodexImageGenerationState={setCodexImageGenerationState}
                     onCollapseStart={() =>
                         setAgentPanel((current) => ({ ...current, open: false }))
@@ -4932,6 +4932,25 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onInitialRequestConsumed={() => setInitialAgentRequest(null)}
                 />
             ) : null}
+            <Modal title="审核 AI 优化提示词" open={Boolean(optimizedImagePrompt)} centered width={760} onCancel={() => setOptimizedImagePrompt(null)} footer={[
+                <Button key="cancel" onClick={() => setOptimizedImagePrompt(null)}>取消</Button>,
+                <Button key="original" onClick={() => {
+                    if (!optimizedImagePrompt) return;
+                    startCodexImageGeneration(optimizedImagePrompt.nodeId, optimizedImagePrompt.originalPrompt);
+                    setOptimizedImagePrompt(null);
+                }}>使用原文生成</Button>,
+                <Button key="apply" type="primary" disabled={!optimizedImagePrompt?.prompt.trim()} onClick={() => {
+                    if (!optimizedImagePrompt) return;
+                    startCodexImageGeneration(optimizedImagePrompt.nodeId, optimizedImagePrompt.prompt);
+                    setOptimizedImagePrompt(null);
+                }}>采用并生成</Button>,
+            ]}>
+                <details className="mb-3">
+                    <summary className="cursor-pointer">查看原提示词</summary>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm">{optimizedImagePrompt?.originalPrompt}</p>
+                </details>
+                <Input.TextArea aria-label="可编辑的 AI 优化提示词" value={optimizedImagePrompt?.prompt || ""} onChange={(event) => setOptimizedImagePrompt((current) => current ? { ...current, prompt: event.target.value } : null)} autoSize={{ minRows: 12, maxRows: 22 }} />
+            </Modal>
         </main>
     );
 }

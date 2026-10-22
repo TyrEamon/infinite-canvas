@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ArrowUp, LoaderCircle, Maximize2, Sparkles, Square } from "lucide-react";
-import { Button, Modal, Switch, Tooltip } from "antd";
+import { Button, Modal, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
 import { useAutoDLWorkflow } from "@/hooks/use-autodl-workflow";
@@ -85,7 +85,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         const text = prompt.trim();
         if (!canSubmit || generating || isStopping) return;
         if (codexImageGenSelected) {
-            onCodexGenerate?.(node.id, text, Boolean(node.metadata?.codexPromptOptimization));
+            onCodexGenerate?.(node.id, text, false);
             return;
         }
         onGenerate(node.id, mode, text);
@@ -121,11 +121,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         <>
                             <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.imageChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef, codexImageGen: false })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId, codexImageGen: false })} capability="image" onMissingConfig={() => openConfigDialog(true)} includeCodexImageGen={node.type === CanvasNodeType.Image && Boolean(onCodexGenerate)} codexImageGenSelected={codexImageGenSelected} onCodexImageGenSelect={(selected) => onConfigChange(node.id, { codexImageGen: selected, ...(selected ? { workflowRef: undefined } : {}) })} />
                             {codexImageGenSelected ? (
-                                <Tooltip title="开启后 Codex 会先优化提示词；关闭时按原提示词生成。">
-                                    <label className="inline-flex h-10 shrink-0 cursor-pointer items-center gap-2 px-1 text-xs" style={{ color: theme.node.text }}>
-                                        <span>AI 优化</span>
-                                        <Switch size="small" checked={Boolean(node.metadata?.codexPromptOptimization)} aria-label="Codex 生图前优化提示词" onChange={(enabled) => onConfigChange(node.id, { codexPromptOptimization: enabled })} />
-                                    </label>
+                                <Tooltip title="先查看和编辑优化稿，确认后再生成图片。">
+                                    <Button type="text" disabled={generating || isStopping || !prompt.trim()} icon={<Sparkles className="size-3.5" />} style={{ color: theme.node.text }} onClick={() => onCodexGenerate?.(node.id, prompt.trim(), true)}>AI 优化</Button>
                                 </Tooltip>
                             ) : null}
                             <Tooltip title={codexImageGenSelected ? "Codex 会把这些设置作为生成要求；实际像素、质量和张数可能无法严格保证。" : undefined}>
