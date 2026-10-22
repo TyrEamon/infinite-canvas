@@ -97,7 +97,7 @@ type CanvasAssistantPanelProps = {
     onOpenAssets: () => void;
     getAgentContext: (state: CanvasAgentState) => CanvasAgentContext;
     onExecuteAction: (action: CanvasAgentAction, messageReferenceNodeIds: string[]) => Promise<CanvasAgentToolResult>;
-    onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[] }) => Promise<void>;
+    onCodexImageGenerated?: (image: { dataUrl: string; prompt: string; sourceNodeIds: string[] }, signal?: AbortSignal) => Promise<void>;
     onCollapseStart: () => void;
     onCollapse: () => void;
     initialRequest?: { prompt: string; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[] } | null;
@@ -485,7 +485,7 @@ export function CanvasAssistantPanel({
                 ...input, threadId: session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId })),
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
-                onImageGenerated: onCodexImageGenerated ? (dataUrl, imagePrompt) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt, sourceNodeIds: messageReferenceNodeIds }) : undefined,
+                onImageGenerated: onCodexImageGenerated ? (dataUrl, imagePrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt, sourceNodeIds: messageReferenceNodeIds }, signal) : undefined,
             }) : runCanvasAgent;
             const result = await run({
                 config: requestConfig,

@@ -4153,8 +4153,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         [screenToCanvas, size.height, size.width],
     );
 
-    const saveCodexImageToCanvas = useCallback(async ({ dataUrl, prompt, sourceNodeIds }: { dataUrl: string; prompt: string; sourceNodeIds: string[] }) => {
+    const saveCodexImageToCanvas = useCallback(async ({ dataUrl, prompt, sourceNodeIds }: { dataUrl: string; prompt: string; sourceNodeIds: string[] }, signal?: AbortSignal) => {
+        if (signal?.aborted) return;
         const image = await uploadImage(dataUrl);
+        if (signal?.aborted) return;
         const nodeSize = fitNodeSize(image.width, image.height);
         const sourceNodes = [...new Set(sourceNodeIds)]
             .map((id) => nodesRef.current.find((node) => node.id === id))

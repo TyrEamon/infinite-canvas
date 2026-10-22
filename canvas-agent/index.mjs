@@ -110,6 +110,14 @@ async function runRpc(session, method, params = {}, generation) {
     }
     if (method === "bridge/stop") return { ok: true };
     if (!session.codex || session.codex.stopped) session.codex = new CodexClient((event, data) => {
+        const imageItem = data.params?.item;
+        if (data.method === "item/completed" && imageItem?.type === "imageGeneration" && !imageItem.result && imageItem.savedPath) {
+            try {
+                data = { ...data, params: { ...data.params, item: { ...imageItem, result: "data:image/png;base64," + readFileSync(imageItem.savedPath).toString("base64") } } };
+            } catch {
+                data = { ...data, params: { ...data.params, item: { ...imageItem, status: "failed" } } };
+            }
+        }
         if (data.method === "bridge/disconnected") {
             if (generation === session.codexGeneration) session.codexGeneration += 1;
             for (const pending of session.toolsPending.values()) if (pending.source === "codex") pending.cancel("Codex 请求已停止");
