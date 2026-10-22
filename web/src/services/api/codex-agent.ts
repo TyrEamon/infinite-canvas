@@ -48,10 +48,28 @@ export function createCodexAgentClient(
         handlers.rpc({ generation: previous, method: "bridge/disconnected", params: { message } });
     };
     const request = async <T>(path: string, body: Record<string, unknown>): Promise<T> => {
+        const bodyJson = JSON.stringify({ clientId, ...body });
+        const method = typeof body.method === "string" ? body.method : "";
+        if (path === "/rpc" && ["thread/start", "thread/resume", "turn/start"].includes(method)) {
+            const params = body.params && typeof body.params === "object" ? body.params as Record<string, unknown> : {};
+            const input = Array.isArray(params.input) ? params.input : [];
+            const encoder = new TextEncoder();
+            const imageDataUrls = input.flatMap((item) => {
+                if (!item || typeof item !== "object") return [];
+                const value = item as Record<string, unknown>;
+                return value.type === "image" && typeof value.url === "string" && value.url.startsWith("data:image/") ? [value.url] : [];
+            });
+            console.info("[Codex RPC 请求体积]", {
+                method,
+                requestBytes: encoder.encode(bodyJson).byteLength,
+                imageCount: imageDataUrls.length,
+                imageDataUrlBytes: imageDataUrls.reduce((total, url) => total + encoder.encode(url).byteLength, 0),
+            });
+        }
         const response = await fetch(endpoint + path, {
             method: "POST",
             headers: { "content-type": "application/json", "x-canvas-agent-token": connection.token },
-            body: JSON.stringify({ clientId, ...body }),
+            body: bodyJson,
             signal: path === "/rpc" ? lifetime.signal : AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)]),
         });
         const result = await response.json();

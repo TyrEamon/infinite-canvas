@@ -33,6 +33,7 @@ import remarkGfm from "remark-gfm";
 import { ImageGenerationPending } from "@/components/image-generation-pending";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { shrinkImageToBudget } from "@/lib/image-utils";
 import { cn } from "@/lib/utils";
 import { fetchSystemAgentSkillFile } from "@/services/api/agent-skills";
 import { imageToDataUrl } from "@/services/image-storage";
@@ -63,6 +64,7 @@ import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
 
 const PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = PANEL_MOTION_MS / 1000;
+const CODEX_IMAGE_BUDGET_BYTES = 3 * 1024 * 1024;
 const ASSISTANT_NODE_TYPE_META = {
     [CanvasNodeType.Image]: { Icon: ImageIcon, label: "图片" },
     [CanvasNodeType.Panorama]: { Icon: ImageIcon, label: "全景图" },
@@ -474,8 +476,25 @@ export function CanvasAssistantPanel({
         setIsRunning(true);
         if (mode === "codex" && imageTargetNodeId) onCodexImageGenerationState?.(imageTargetNodeId, true);
         try {
+            const codexImageReferences = mode === "codex"
+                ? references.filter((reference) => isCanvasImageNodeType(reference.type) && Boolean(reference.dataUrl || reference.url || reference.storageKey))
+                : [];
+            const imageBudgetBytes = Math.floor(CODEX_IMAGE_BUDGET_BYTES / Math.max(1, codexImageReferences.length));
+            let omittedCodexImageCount = 0;
             const modelReferences = await Promise.all(
                 references.map(async (reference) => {
+                    if (mode === "codex") {
+                        if (!isCanvasImageNodeType(reference.type) || !(reference.dataUrl || reference.url || reference.storageKey)) return reference;
+                        try {
+                            const dataUrl = await imageToDataUrl(reference);
+                            const shrunkDataUrl = dataUrl ? await shrinkImageToBudget(dataUrl, imageBudgetBytes) : "";
+                            if (!shrunkDataUrl) omittedCodexImageCount += 1;
+                            return { ...reference, dataUrl: shrunkDataUrl };
+                        } catch {
+                            omittedCodexImageCount += 1;
+                            return { ...reference, dataUrl: "" };
+                        }
+                    }
                     if (!reference.dataUrl) return reference;
                     try {
                         return { ...reference, dataUrl: await imageToDataUrl(reference) };
@@ -484,6 +503,9 @@ export function CanvasAssistantPanel({
                     }
                 }),
             );
+            const modelText = omittedCodexImageCount
+                ? `${text}\n\n（${omittedCodexImageCount} 张参考图因读取失败或超出请求预算已省略。）`
+                : text;
             const run = mode === "codex" ? (input: Parameters<typeof runCanvasAgent>[0]) => codex.run({
                 ...input, threadId: session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId })),
@@ -494,7 +516,7 @@ export function CanvasAssistantPanel({
                 config: requestConfig,
                 initialState: session.agentState,
                 protocolMessages: session.protocolMessages,
-                userText: text,
+                userText: modelText,
                 references: modelReferences,
                 activeSkillContents,
                 contextCheckpoint: session.contextCheckpoint,

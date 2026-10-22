@@ -30,6 +30,36 @@ export function getDataUrlByteSize(dataUrl: string) {
     return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
 
+export async function shrinkImageToBudget(dataUrl: string, budgetBytes: number) {
+    if (!dataUrl || budgetBytes <= 0) return "";
+    const dataUrlSize = (value: string) => /;base64$/i.test(value.slice(0, value.indexOf(",")))
+        ? getDataUrlByteSize(value)
+        : new TextEncoder().encode(value).byteLength;
+    if (dataUrlSize(dataUrl) <= budgetBytes) return dataUrl;
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("读取参考图失败"));
+        element.src = dataUrl;
+    });
+    if (!image.naturalWidth || !image.naturalHeight) return "";
+    const ladder = [[1536, 0.85], [1280, 0.8], [1024, 0.75], [860, 0.68], [640, 0.6], [512, 0.5]] as const;
+    for (const [maxEdge, quality] of ladder) {
+        const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext("2d");
+        if (!context) return "";
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const shrunk = canvas.toDataURL("image/jpeg", quality);
+        if (dataUrlSize(shrunk) <= budgetBytes) return shrunk;
+    }
+    return "";
+}
+
 export function readFileAsDataUrl(file: File, errorMessage = "读取图片失败") {
     return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
