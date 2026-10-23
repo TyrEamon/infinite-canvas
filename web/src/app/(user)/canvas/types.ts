@@ -46,6 +46,7 @@ export type CanvasNodeMetadata = {
     model?: string;
     codexImageGen?: boolean;
     codexPromptOptimization?: boolean;
+    wanxVideoModel?: boolean;
     workflowRef?: import("@/lib/workflow-channel").WorkflowRef;
     channelId?: string;
     size?: string;

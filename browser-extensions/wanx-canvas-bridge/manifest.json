@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "无限画布 × 通义万相桥接",
+  "version": "0.2.0",
+  "description": "在本地无限画布中选择通义万相网页模型并桥接视频生成。",
+  "permissions": ["activeTab", "tabs"],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "https://platform.qianwenai.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "无限画布 × 通义万相",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "https://platform.qianwenai.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

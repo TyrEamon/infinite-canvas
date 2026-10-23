@@ -129,6 +129,7 @@ const CONNECTION_NODE_HIT_PADDING = 32;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const WANX_WEB_VIDEO_MODEL = "__wanx_web_video__";
 const AGENT_PRIMARY_SCRIPT_NODE_SIZE = { width: 550, height: 600 };
 const VIDEO_PREVIEW_CONTROL_CLASS = "flex size-9 items-center justify-center rounded-lg text-white transition-colors hover:bg-white/10";
 const IMAGE_PROMPT_REVERSE_PRESET = `请根据参考图片反推一段适合用于 AI 生图的提示词。
@@ -1884,6 +1885,161 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         }
     }, [message]);
 
+    useEffect(() => {
+        if (!projectLoaded) return;
+
+        const respond = (requestId: string, payload: Record<string, unknown>) => {
+            window.postMessage({ source: "infinite-canvas-page", type: "wanx-response", requestId, ...payload }, window.location.origin);
+        };
+        const handleMessage = (event: MessageEvent) => {
+            if (event.source !== window || event.origin !== window.location.origin) return;
+            const data = event.data as { source?: string; type?: string; requestId?: string; nodeId?: string; targetNodeId?: string; prompt?: string; error?: string; blob?: Blob; filename?: string; mimeType?: string; sourceNodeIds?: string[]; autoSubmit?: boolean } | null;
+            if (data?.source !== "infinite-canvas-wanx-extension" || !data.requestId) return;
+
+            if (data.type === "get-context") {
+                void (async () => {
+                    if (!data.nodeId && selectedNodeIdsRef.current.size !== 1) throw new Error("请只选中一个提示词、生成或素材节点");
+                    const selectedId = data.nodeId || Array.from(selectedNodeIdsRef.current)[0];
+                    const selectedNode = nodesRef.current.find((node) => node.id === selectedId);
+                    if (!selectedNode) throw new Error("请先在画布选中一个提示词或素材节点");
+
+                    const sourcePrompt = selectedNode.type === CanvasNodeType.Text
+                        ? selectedNode.metadata?.content || selectedNode.metadata?.prompt || ""
+                        : selectedNode.metadata?.composerContent || selectedNode.metadata?.prompt || "";
+                    const context = buildNodeGenerationContext(selectedNode.id, nodesRef.current, connectionsRef.current, data.prompt ?? sourcePrompt);
+                    const textInputNodeIds = buildNodeGenerationInputs(selectedNode.id, nodesRef.current, connectionsRef.current)
+                        .filter((input) => input.type === "text")
+                        .map((input) => input.nodeId);
+                    const references = [
+                        ...context.referenceImages.map((item) => ({ id: item.id, kind: "image" as const, name: item.name, mimeType: item.type, storageKey: item.storageKey, url: item.dataUrl })),
+                        ...(context.firstFrame ? [{ id: context.firstFrame.id, kind: "image" as const, name: context.firstFrame.name, mimeType: context.firstFrame.type, storageKey: context.firstFrame.storageKey, url: context.firstFrame.dataUrl }] : []),
+                        ...(context.lastFrame && context.lastFrame.id !== context.firstFrame?.id ? [{ id: context.lastFrame.id, kind: "image" as const, name: context.lastFrame.name, mimeType: context.lastFrame.type, storageKey: context.lastFrame.storageKey, url: context.lastFrame.dataUrl }] : []),
+                        ...context.referenceVideos.map((item) => ({ id: item.id, kind: "video" as const, name: item.name, mimeType: item.type, storageKey: item.storageKey, url: item.url })),
+                        ...context.referenceAudios.map((item) => ({ id: item.id, kind: "audio" as const, name: item.name, mimeType: item.type, storageKey: item.storageKey, url: item.url })),
+                    ];
+                    if ((isCanvasImageNodeType(selectedNode.type) || selectedNode.type === CanvasNodeType.Video || selectedNode.type === CanvasNodeType.Audio) && selectedNode.metadata?.content && !references.some((item) => item.id === selectedNode.id)) {
+                        references.unshift({
+                            id: selectedNode.id,
+                            kind: isCanvasImageNodeType(selectedNode.type) ? "image" : selectedNode.type === CanvasNodeType.Video ? "video" : "audio",
+                            name: selectedNode.title || `${selectedNode.type}-${selectedNode.id}`,
+                            mimeType: selectedNode.metadata.mimeType,
+                            storageKey: selectedNode.metadata.storageKey,
+                            url: selectedNode.metadata.content,
+                        });
+                    }
+
+                    const files = await Promise.all(references.map(async (reference) => {
+                        const url = reference.kind === "image"
+                            ? await resolveImageUrl(reference.storageKey, reference.url)
+                            : await resolveMediaUrl(reference.storageKey, reference.url);
+                        const blob = /^blob:|^data:/i.test(url) ? await (await fetch(url)).blob() : await downloadRemoteMedia(url);
+                        if (!blob.size) throw new Error(`参考素材为空：${reference.name}`);
+                        const mimeType = blob.type || reference.mimeType || (reference.kind === "video" ? "video/mp4" : reference.kind === "audio" ? "audio/mpeg" : "image/png");
+                        const extension = mimeType.split("/")[1]?.split(";")[0]?.replace("jpeg", "jpg") || (reference.kind === "video" ? "mp4" : reference.kind === "audio" ? "mp3" : "png");
+                        const baseName = (reference.name || `${reference.kind}-${reference.id}`).replace(/[\\/:*?"<>|]/g, "_").replace(/\.[^.]+$/, "");
+                        return { id: reference.id, kind: reference.kind, name: `${baseName}.${extension}`, mimeType, blob };
+                    }));
+
+                    respond(data.requestId!, {
+                        ok: true,
+                        context: {
+                            prompt: context.prompt,
+                            sourceNodeIds: Array.from(new Set([selectedNode.id, ...textInputNodeIds, ...files.map((file) => file.id)])),
+                            targetNodeId: selectedNode.type === CanvasNodeType.Video ? selectedNode.id : undefined,
+                            files,
+                            canvasUrl: window.location.href,
+                        },
+                    });
+                })().catch((error) => respond(data.requestId!, { ok: false, error: error instanceof Error ? error.message : "读取画布上下文失败" }));
+                return;
+            }
+
+            if (data.type === "import-video") {
+                void (async () => {
+                    if (!(data.blob instanceof Blob) || !data.blob.size) throw new Error("没有收到有效的视频文件");
+                    const mimeType = data.mimeType || data.blob.type || "video/mp4";
+                    const filename = (data.filename || `wanxiang-${Date.now()}.mp4`).replace(/[\\/:*?"<>|]/g, "_");
+                    const file = new File([data.blob], filename, { type: mimeType });
+                    const uploaded = await uploadMediaFile(file, "wanxiang-video");
+                    const currentNodes = nodesRef.current;
+                    const sourceNodes = Array.from(new Set(data.sourceNodeIds || []))
+                        .map((id) => currentNodes.find((node) => node.id === id))
+                        .filter((node): node is CanvasNodeData => Boolean(node));
+                    const targetNode = currentNodes.find((node) => node.id === data.targetNodeId);
+                    const imported = buildImportedVideoNode(uploaded, filename, targetNode ? { x: targetNode.position.x + targetNode.width / 2, y: targetNode.position.y + targetNode.height / 2 } : getCanvasCenter());
+                    if (data.autoSubmit && targetNode?.type === CanvasNodeType.Video && !targetNode.metadata?.content) {
+                        const nextNodes = currentNodes.map((node) => node.id === targetNode.id ? {
+                            ...node,
+                            title: filename,
+                            width: imported.width,
+                            height: imported.height,
+                            metadata: { ...node.metadata, ...imported.metadata, prompt: data.prompt || node.metadata?.prompt, model: WANX_WEB_VIDEO_MODEL, wanxVideoModel: true, status: NODE_STATUS_SUCCESS, startedAt: undefined, progress: undefined, errorDetails: undefined },
+                        } : node);
+                        nodesRef.current = nextNodes;
+                        setNodes(nextNodes);
+                        setSelectedNodeIds(new Set([targetNode.id]));
+                        setSelectedConnectionId(null);
+                        setDialogNodeId(targetNode.id);
+                        message.success("万象视频已生成并写入当前节点");
+                        respond(data.requestId!, { ok: true, nodeId: targetNode.id });
+                        return;
+                    }
+                    const rightmost = sourceNodes.reduce<CanvasNodeData | null>((current, node) => !current || node.position.x + node.width > current.position.x + current.width ? node : current, null);
+                    const estimatedSize = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                    const center = rightmost
+                        ? { x: rightmost.position.x + rightmost.width + 96 + estimatedSize.width / 2, y: rightmost.position.y + rightmost.height / 2 }
+                        : getCanvasCenter();
+                    for (let attempt = 0; attempt < 50 && currentNodes.some((existing) =>
+                        center.x - estimatedSize.width / 2 < existing.position.x + existing.width + 24 &&
+                        center.x + estimatedSize.width / 2 + 24 > existing.position.x &&
+                        center.y - estimatedSize.height / 2 < existing.position.y + existing.height + 24 &&
+                        center.y + estimatedSize.height / 2 + 24 > existing.position.y,
+                    ); attempt += 1) center.y += estimatedSize.height + 72;
+                    const baseNode = buildImportedVideoNode(uploaded, filename, center);
+                    const node = data.autoSubmit ? { ...baseNode, metadata: { ...baseNode.metadata, prompt: data.prompt, model: WANX_WEB_VIDEO_MODEL, wanxVideoModel: true } } : baseNode;
+                    const currentConnections = connectionsRef.current;
+                    const createdConnections = sourceNodes.flatMap((source) => {
+                        if (currentConnections.some((connection) => connection.fromNodeId === source.id && connection.toNodeId === node.id)) return [];
+                        const normalized = normalizeConnection(source.id, node.id, [...currentNodes, node], "source");
+                        return normalized ? [{ id: nanoid(), ...normalized }] : [];
+                    });
+                    const nextNodes = [...currentNodes.map((item) => item.id === data.targetNodeId && item.metadata?.status === NODE_STATUS_LOADING ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_SUCCESS, startedAt: undefined, progress: undefined, errorDetails: undefined } } : item), node];
+                    const nextConnections = [...currentConnections, ...createdConnections];
+                    nodesRef.current = nextNodes;
+                    connectionsRef.current = nextConnections;
+                    setNodes(nextNodes);
+                    setConnections(nextConnections);
+                    setSelectedNodeIds(new Set([node.id]));
+                    setSelectedConnectionId(null);
+                    setDialogNodeId(node.id);
+                    message.success("万象视频已导入画布并连接参考节点");
+                    respond(data.requestId!, { ok: true, nodeId: node.id });
+                })().catch((error) => {
+                    const errorMessage = error instanceof Error ? error.message : "导入万象视频失败";
+                    if (data.autoSubmit && data.targetNodeId) {
+                        const nextNodes = nodesRef.current.map((node) => node.id === data.targetNodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: errorMessage } } : node);
+                        nodesRef.current = nextNodes;
+                        setNodes(nextNodes);
+                    }
+                    message.error(errorMessage);
+                    respond(data.requestId!, { ok: false, error: errorMessage });
+                });
+                return;
+            }
+
+            if (data.type === "import-error") {
+                const errorDetails = data.error || "万象视频回传失败";
+                const nextNodes = nodesRef.current.map((node) => node.id === data.targetNodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node);
+                nodesRef.current = nextNodes;
+                setNodes(nextNodes);
+                respond(data.requestId!, { ok: true });
+            }
+        };
+
+        window.addEventListener("message", handleMessage);
+        return () => window.removeEventListener("message", handleMessage);
+    }, [getCanvasCenter, message, projectLoaded]);
+
     const createAudioFileNode = useCallback(async (file: File, position: Position) => {
         const hideLoading = message.loading("正在上传音频...", 0);
         try {
@@ -2992,6 +3148,62 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setAssistantMounted(true);
         setAgentPanel((current) => ({ ...current, open: true }));
     }, [handleAgentConfigChange]);
+
+    const startWanxVideoGeneration = useCallback(async (nodeId: string, prompt: string) => {
+        const sourceNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Video);
+        const normalizedPrompt = prompt.trim();
+        if (!sourceNode || !normalizedPrompt) return;
+        const startedAt = Date.now();
+        const nextNodes = nodesRef.current.map((node) => node.id === nodeId ? {
+            ...node,
+            metadata: { ...node.metadata, prompt: normalizedPrompt, model: WANX_WEB_VIDEO_MODEL, wanxVideoModel: true, status: NODE_STATUS_LOADING, startedAt, progress: undefined, errorDetails: undefined },
+        } : node);
+        nodesRef.current = nextNodes;
+        setNodes(nextNodes);
+
+        try {
+            const extensionConnected = await new Promise<boolean>((resolve) => {
+                const requestId = nanoid();
+                const finish = (connected: boolean) => {
+                    window.clearTimeout(timeout);
+                    window.removeEventListener("message", handleResponse);
+                    resolve(connected);
+                };
+                const timeout = window.setTimeout(() => finish(false), 1500);
+                const handleResponse = (event: MessageEvent) => {
+                    if (event.source === window && event.origin === window.location.origin && event.data?.source === "infinite-canvas-wanx-extension" && event.data?.type === "wanx-pong" && event.data?.requestId === requestId) finish(true);
+                };
+                window.addEventListener("message", handleResponse);
+                window.postMessage({ source: "infinite-canvas-page", type: "wanx-ping", requestId }, window.location.origin);
+            });
+            if (!extensionConnected) throw new Error("无法连接万象扩展；请确认 Edge 扩展已启用，并刷新 localhost:3000 画布");
+            const submitted = await new Promise<boolean>((resolve, reject) => {
+                const requestId = nanoid();
+                const timeout = window.setTimeout(() => finish(new Error("万象桥接响应超时；请确认扩展已启用且画布运行在 localhost:3000")), 300000);
+                const finish = (error?: Error, submitted = false) => {
+                    window.clearTimeout(timeout);
+                    window.removeEventListener("message", handleResponse);
+                    if (error) reject(error);
+                    else resolve(submitted);
+                };
+                const handleResponse = (event: MessageEvent) => {
+                    if (event.source !== window || event.origin !== window.location.origin || event.data?.source !== "infinite-canvas-wanx-extension" || event.data?.type !== "wanx-generate-response" || event.data?.requestId !== requestId) return;
+                    if (event.data.ok) finish(undefined, Boolean(event.data.submitted));
+                    else finish(new Error(typeof event.data.error === "string" ? event.data.error : "万象网页生成提交失败"));
+                };
+                window.addEventListener("message", handleResponse);
+                window.postMessage({ source: "infinite-canvas-page", type: "wanx-generate", requestId, nodeId, prompt: normalizedPrompt }, window.location.origin);
+            });
+            if (submitted) message.success("已在万象网页提交生成；完成后点扩展图标扫描并回传视频");
+            else message.info("提示词和素材已送到万象页，请手动点生成；完成后点扩展图标扫描并回传视频");
+        } catch (error) {
+            const errorDetails = error instanceof Error ? error.message : "万象网页生成提交失败";
+            const failedNodes = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node);
+            nodesRef.current = failedNodes;
+            setNodes(failedNodes);
+            message.error(errorDetails);
+        }
+    }, [message]);
 
     const startTitleEditing = useCallback(() => {
         setTitleDraft(currentProject?.title || "未命名画布");
@@ -4503,6 +4715,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                             else void handleGenerateNode(nodeId, mode, prompt);
                                         }}
                                         onCodexGenerate={startCodexImageGeneration}
+                                        onWanxGenerate={startWanxVideoGeneration}
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}

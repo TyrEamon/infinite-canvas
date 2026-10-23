@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { Cpu, Sparkles } from "lucide-react";
+import { Cpu, Sparkles, Video } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { useAutoDLWorkflowNames } from "@/hooks/use-autodl-workflow";
@@ -26,13 +26,17 @@ type ModelPickerProps = {
     includeCodexImageGen?: boolean;
     codexImageGenSelected?: boolean;
     onCodexImageGenSelect?: (selected: boolean) => void;
+    includeWanxVideo?: boolean;
+    wanxVideoSelected?: boolean;
+    onWanxVideoSelect?: (selected: boolean) => void;
 };
 
 type PickerBase = { key: string; channelId?: string; channelName: string; protocol?: string; baseUrl?: string };
 type PickerOption = (PickerBase & { model: string }) | (PickerBase & { model: ""; workflowRef: WorkflowRef; label: string });
 const CODEX_IMAGE_GEN_VALUE = "__codex_imagegen__";
+const WANX_VIDEO_VALUE = "__wanx_web_video__";
 
-export function ModelPicker({ config, value, channelId, capability, onChange, workflowRef, onWorkflowChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig, includeCodexImageGen = false, codexImageGenSelected = false, onCodexImageGenSelect }: ModelPickerProps) {
+export function ModelPicker({ config, value, channelId, capability, onChange, workflowRef, onWorkflowChange, className, fullWidth = false, placeholder = "选择模型", onMissingConfig, includeCodexImageGen = false, codexImageGenSelected = false, onCodexImageGenSelect, includeWanxVideo = false, wanxVideoSelected = false, onWanxVideoSelect }: ModelPickerProps) {
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const token = useUserStore((state) => state.token);
@@ -40,6 +44,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
     const publicSettings = useConfigStore((state) => state.publicSettings);
     const workflowEnabled = Boolean(onWorkflowChange && capability && capability !== "text");
     const showCodexImageGenOption = includeCodexImageGen && capability === "image";
+    const showWanxVideoOption = includeWanxVideo && capability === "video";
     const channelOptions = useMemo<PickerOption[]>(() => {
         const channels =
             config.channelMode === "remote"
@@ -60,11 +65,11 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
         return channelOptions.find((item) => item.model === value && item.channelId === channelId) || channelOptions.find((item) => item.model === value);
     }, [channelId, channelOptions, value, workflowEnabled, workflowRef]);
     const options = channelOptions;
-    const current = codexImageGenSelected && showCodexImageGenOption ? "Codex ImageGen" : workflowRef && workflowEnabled ? (currentOption && "label" in currentOption ? currentOption.label : "") : value || "";
-    const currentValue = codexImageGenSelected && showCodexImageGenOption ? CODEX_IMAGE_GEN_VALUE : current && currentOption ? currentOption.key : "";
+    const current = wanxVideoSelected && showWanxVideoOption ? "通义万相网页" : codexImageGenSelected && showCodexImageGenOption ? "Codex ImageGen" : workflowRef && workflowEnabled ? (currentOption && "label" in currentOption ? currentOption.label : "") : value || "";
+    const currentValue = wanxVideoSelected && showWanxVideoOption ? WANX_VIDEO_VALUE : codexImageGenSelected && showCodexImageGenOption ? CODEX_IMAGE_GEN_VALUE : current && currentOption ? currentOption.key : "";
 
 	useEffect(() => {
-		if (codexImageGenSelected) return;
+		if (codexImageGenSelected || wanxVideoSelected) return;
 		if (workflowRef && workflowEnabled) {
 			const workflowOptionsReady = workflowRef.scope === "system"
 				? publicSettings !== null
@@ -75,7 +80,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
             return;
         }
         if (value && currentOption?.channelId && !("workflowRef" in currentOption) && channelId !== currentOption.channelId) onChange(value, currentOption.channelId);
-	}, [channelId, channelOptions, codexImageGenSelected, config.workflowSyncTouched, currentOption, onChange, onWorkflowChange, publicSettings, token, userReady, value, workflowEnabled, workflowRef]);
+	}, [channelId, channelOptions, codexImageGenSelected, config.workflowSyncTouched, currentOption, onChange, onWorkflowChange, publicSettings, token, userReady, value, wanxVideoSelected, workflowEnabled, workflowRef]);
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -90,7 +95,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
             open={open}
             value={current ? currentValue : ""}
             onOpenChange={(nextOpen) => {
-                if (nextOpen && !options.length && !showCodexImageGenOption && config.channelMode === "local") {
+                if (nextOpen && !options.length && !showCodexImageGenOption && !showWanxVideoOption && config.channelMode === "local") {
                     onMissingConfig?.();
                     return;
                 }
@@ -98,11 +103,19 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 setOpen(nextOpen);
             }}
             onValueChange={(nextValue) => {
+                if (nextValue === WANX_VIDEO_VALUE) {
+                    onCodexImageGenSelect?.(false);
+                    onWanxVideoSelect?.(true);
+                    onWorkflowChange?.(undefined);
+                    return;
+                }
                 if (nextValue === CODEX_IMAGE_GEN_VALUE) {
+                    onWanxVideoSelect?.(false);
                     onCodexImageGenSelect?.(true);
                     return;
                 }
                 onCodexImageGenSelect?.(false);
+                onWanxVideoSelect?.(false);
                 const option = options.find((item) => item.key === nextValue);
                 if (!option) return;
                 if ("workflowRef" in option) onWorkflowChange?.(option.workflowRef);
@@ -120,8 +133,8 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 onPointerDown={(event) => event.stopPropagation()}
                 title={workflowRef && workflowEnabled && !currentOption ? "工作流已停用、未公开或删除，请重新选择" : current || placeholder}
             >
-                {codexImageGenSelected && showCodexImageGenOption ? <Sparkles className="size-4 shrink-0" /> : <ModelIcon model={current} />}
-                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{codexImageGenSelected && showCodexImageGenOption ? current : workflowRef && workflowEnabled ? current || "工作流已停用、未公开或删除，请重新选择" : modelLabel(current, currentOption) || placeholder}</span>
+                {wanxVideoSelected && showWanxVideoOption ? <Video className="size-4 shrink-0" /> : codexImageGenSelected && showCodexImageGenOption ? <Sparkles className="size-4 shrink-0" /> : <ModelIcon model={current} />}
+                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{wanxVideoSelected && showWanxVideoOption ? current : codexImageGenSelected && showCodexImageGenOption ? current : workflowRef && workflowEnabled ? current || "工作流已停用、未公开或删除，请重新选择" : modelLabel(current, currentOption) || placeholder}</span>
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
@@ -133,7 +146,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
             >
-                {options.length || showCodexImageGenOption ? (
+                {options.length || showCodexImageGenOption || showWanxVideoOption ? (
                     <>
                         {options.map((option) => (
                             <SelectItem key={option.key} value={option.key} textValue={`${"workflowRef" in option ? option.label : modelLabel(option.model, option)} ${option.model} ${option.channelName}`}>
@@ -146,6 +159,15 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                                     <Sparkles className="size-4 shrink-0" />
                                     <span>Codex ImageGen</span>
                                     <span className="ml-auto text-xs opacity-50">Codex 内置</span>
+                                </span>
+                            </SelectItem>
+                        ) : null}
+                        {showWanxVideoOption ? (
+                            <SelectItem value={WANX_VIDEO_VALUE} textValue="通义万相网页视频 浏览器桥接">
+                                <span className="flex min-w-0 items-center gap-2">
+                                    <Video className="size-4 shrink-0" />
+                                    <span>通义万相网页</span>
+                                    <span className="ml-auto text-xs opacity-50">浏览器桥接</span>
                                 </span>
                             </SelectItem>
                         ) : null}

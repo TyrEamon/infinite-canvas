@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUp, LoaderCircle, Maximize2, Sparkles, Square } from "lucide-react";
+import { ArrowUp, LoaderCircle, Maximize2, Sparkles, Square, Video } from "lucide-react";
 import { Button, Modal, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -33,6 +33,7 @@ type CanvasNodePromptPanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
     onCodexGenerate?: (nodeId: string, prompt: string, optimizePrompt: boolean) => void;
+    onWanxGenerate?: (nodeId: string, prompt: string) => void;
     onStop: (nodeId: string) => void;
     mentionReferences?: CanvasResourceReference[];
     connectedNodes?: CanvasNodeData[];
@@ -43,7 +44,7 @@ type CanvasNodePromptPanelProps = {
     onImageSettingsOpenChange?: (open: boolean) => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onCodexGenerate, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onCodexGenerate, onWanxGenerate, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -51,6 +52,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const mode = defaultMode(node.type);
     const config = buildNodeConfig(globalConfig, node, mode);
     const codexImageGenSelected = Boolean(node.type === CanvasNodeType.Image && node.metadata?.codexImageGen && onCodexGenerate);
+    const wanxVideoSelected = Boolean(node.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel && onWanxGenerate);
     const { data: autodlWorkflow } = useAutoDLWorkflow(config, mode === "video" ? config.model : "");
     const isPanorama = isPanoramaNodeType(node.type);
     const mediaLoading = (isCanvasImageNodeType(node.type) || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.status === "loading";
@@ -79,13 +81,17 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         onPromptChange(node.id, value);
     };
 
-    const canSubmit = node.metadata?.status === "stopped" || Boolean(prompt.trim()) || (mode !== "text" && Boolean(node.metadata?.workflowRef)) || (mode === "video" && isAutoDLConfig(config) && getAutoDLCapabilities(autodlWorkflow)?.promptRequired === false) || (isPanorama && (hasImageContent || mentionReferences.length > 0));
+    const canSubmit = wanxVideoSelected ? Boolean(prompt.trim()) : node.metadata?.status === "stopped" || Boolean(prompt.trim()) || (mode !== "text" && Boolean(node.metadata?.workflowRef)) || (mode === "video" && isAutoDLConfig(config) && getAutoDLCapabilities(autodlWorkflow)?.promptRequired === false) || (isPanorama && (hasImageContent || mentionReferences.length > 0));
 
     const submit = () => {
         const text = prompt.trim();
         if (!canSubmit || generating || isStopping) return;
         if (codexImageGenSelected) {
             onCodexGenerate?.(node.id, text, false);
+            return;
+        }
+        if (wanxVideoSelected) {
+            onWanxGenerate?.(node.id, text);
             return;
         }
         onGenerate(node.id, mode, text);
@@ -141,8 +147,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         </>
                     ) : mode === "video" ? (
                         <>
-                            <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.videoChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId })} capability="video" onMissingConfig={() => openConfigDialog(true)} />
-                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !w-[148px] !shrink-0 !justify-start !rounded-full !px-3" frameOptions={videoFrameOptions} resourceOptions={videoResourceOptions} metadata={node.metadata} firstFrameNodeId={node.metadata?.firstFrameNodeId} lastFrameNodeId={node.metadata?.lastFrameNodeId} onFrameChange={(patch) => onConfigChange(node.id, patch)} onMetadataChange={(patch) => onConfigChange(node.id, patch)} onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.videoChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef, wanxVideoModel: false })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId, wanxVideoModel: false })} capability="video" onMissingConfig={() => openConfigDialog(true)} includeWanxVideo={node.type === CanvasNodeType.Video && Boolean(onWanxGenerate)} wanxVideoSelected={wanxVideoSelected} onWanxVideoSelect={(selected) => onConfigChange(node.id, { wanxVideoModel: selected, ...(selected ? { workflowRef: undefined } : {}) })} />
+                            {wanxVideoSelected ? <span className="px-2 text-xs opacity-60">参数在万象网页设置</span> : <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !w-[148px] !shrink-0 !justify-start !rounded-full !px-3" frameOptions={videoFrameOptions} resourceOptions={videoResourceOptions} metadata={node.metadata} firstFrameNodeId={node.metadata?.firstFrameNodeId} lastFrameNodeId={node.metadata?.lastFrameNodeId} onFrameChange={(patch) => onConfigChange(node.id, patch)} onMetadataChange={(patch) => onConfigChange(node.id, patch)} onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />}
                         </>
                     ) : mode === "audio" ? (
                         <>
@@ -152,7 +158,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : (
                         <ModelPicker config={config} value={config.model} channelId={config.textChannelId} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId })} capability="text" onMissingConfig={() => openConfigDialog(true)} />
                     )}
-                    {mode === "video" || (mode === "image" && !isPanorama && !codexImageGenSelected) ? (
+                    {(mode === "video" && !wanxVideoSelected) || (mode === "image" && !isPanorama && !codexImageGenSelected) ? (
                         <CanvasCameraControl value={node.metadata?.cameraControl} onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })} buttonClassName="!h-10 !min-w-[92px] !justify-start !rounded-full !px-3" />
                     ) : null}
                 </div>
@@ -162,11 +168,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     className="ml-auto !h-10 !min-w-16 shrink-0 !rounded-full !px-3"
                     disabled={(isStopping && !stopFailed) || (!canStop && (generating || !canSubmit))}
                     onClick={canStop ? () => onStop(node.id) : submit}
-                    aria-label={canStop ? stopFailed ? "重试停止" : "停止" : isStopping ? "停止中" : codexImageGenSelected ? "Codex ImageGen 生成" : "生成"}
+                    aria-label={canStop ? stopFailed ? "重试停止" : "停止" : isStopping ? "停止中" : codexImageGenSelected ? "Codex ImageGen 生成" : wanxVideoSelected ? "通义万相视频生成" : "生成"}
                 >
                     <span className="relative inline-flex">
                         <span className={`flex items-center gap-1.5${showStop ? " invisible" : ""}`}>
-                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">{codexImageGenSelected ? <Sparkles className="size-4" /> : <><CreditSymbol />{credits.toLocaleString()}</>}</span>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">{codexImageGenSelected ? <Sparkles className="size-4" /> : wanxVideoSelected ? <Video className="size-4" /> : <><CreditSymbol />{credits.toLocaleString()}</>}</span>
                             {generating ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
                         </span>
                         {showStop ? <span className="absolute inset-0 flex items-center justify-center">
