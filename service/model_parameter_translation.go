@@ -210,6 +210,10 @@ func parameterTranslationValue(object *goja.Object, name string) goja.Value {
 
 func NewParameterTranslation(channel model.ModelChannel, modelName string, variables map[string]any) (*ParameterTranslation, error) {
 	programs, err := parameterTranslationPrograms(channel.ParameterTranslation)
+	if err == nil && programs[modelName] == nil && isDashScopeWanVideoModel(channel.Protocol, modelName) {
+		channel.ParameterTranslation = dashScopeWanVideoTranslation
+		programs, err = parameterTranslationPrograms(channel.ParameterTranslation)
+	}
 	if err != nil || programs[modelName] == nil {
 		return nil, err
 	}

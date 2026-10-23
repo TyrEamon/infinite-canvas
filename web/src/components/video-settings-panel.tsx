@@ -4,13 +4,14 @@ import { type CSSProperties, type ReactNode } from "react";
 import { Input, Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
+import { isDashScopeWanVideoModel } from "@/lib/dashscope-video";
 import { useAutoDLWorkflow } from "@/hooks/use-autodl-workflow";
 import { isAutoDLConfig, normalizeAutoDLDuration } from "@/lib/autodl";
 import { boolConfig, isSeedanceFastOrMiniModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { COGVIDEOX3_DURATIONS, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
 import { grokVideoModeOptions, isAPIMartKlingV26Config, isAPIMartKlingV3Config, isKIEGrokVideoModel, isKIEKlingV3Config, klingV26DurationOptions, klingV26ModeOptions, klingV26RatioLabels, klingV26RatioOptions, klingV3DurationOptions, klingV3ModeOptions, normalizeKlingV26Duration, normalizeKlingV26Ratio, normalizeKlingV3Duration } from "@/services/api/protocols/kling-models";
-import { type AiConfig } from "@/stores/use-config-store";
+import { channelProtocolForConfig, type AiConfig } from "@/stores/use-config-store";
 
 export { isAPIMartKlingV26Config, isAPIMartKlingV3Config, isAPIMartKlingMotionControlConfig, isKIEKlingV3Config, kieKlingOmniVariant, isKIEKlingMotionControlConfig, isKIEGrokVideoModel } from "@/services/api/protocols/kling-models";
 
@@ -49,6 +50,9 @@ export function VideoSettingsPanel({ config, modelName, onConfigChange, theme, s
     const model = modelName || config.model || config.videoModel;
     const autodl = isAutoDLConfig(config, model);
     const { data: workflow } = useAutoDLWorkflow(config, model);
+    if (isDashScopeWanVideoModel(channelProtocolForConfig({ ...config, model }), model)) {
+        return <DashScopeWanVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} visualOnly={visualOnly} />;
+    }
     if (isAPIMartKlingV26Config(config, modelName || config.model || config.videoModel) || isAPIMartKlingV3Config(config, modelName || config.model || config.videoModel) || isKIEKlingV3Config(config, modelName || config.model || config.videoModel)) {
         return <KlingV26VideoSettingsPanel config={config} modelName={modelName} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} hideNegativePrompt={hideNegativePrompt} visualOnly={visualOnly} />;
     }
@@ -168,6 +172,35 @@ export function VideoSettingsPanel({ config, modelName, onConfigChange, theme, s
                         {audioGenerationEnabled ? <AudioGenerationSetting checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}
                     </>
                 ) : null}
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function DashScopeWanVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className, visualOnly }: VideoSettingsPanelProps) {
+    const ratio = normalizeSeedanceRatio(config.size);
+    const resolution = config.vquality.replace(/p$/i, "");
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-lg font-semibold">万相 3.0 视频设置</div> : null}
+                <SettingGroup title="分辨率" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-2.5">{["480", "720", "1080"].map((value) => <OptionPill key={value} selected={resolution === value} theme={theme} onClick={() => onConfigChange("vquality", value)}>{value}P</OptionPill>)}</div>
+                </SettingGroup>
+                <SettingGroup title="画面比例" color={theme.node.muted}>
+                    <div className="grid grid-cols-4 gap-2.5">{["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].map((value) => <OptionPill key={value} selected={ratio === value} theme={theme} onClick={() => onConfigChange("size", value === "adaptive" ? "auto" : value)}>{value === "adaptive" ? "自动" : value}</OptionPill>)}</div>
+                </SettingGroup>
+                {!visualOnly ? <>
+                    <SettingGroup title="时长" color={theme.node.muted}>
+                        <div className="flex flex-wrap gap-2.5">
+                            <OptionPill selected={config.videoSeconds === "-1"} theme={theme} onClick={() => onConfigChange("videoSeconds", "-1")}>智能</OptionPill>
+                            <NumberInput value={config.videoSeconds === "-1" ? "" : config.videoSeconds} min={2} max={30} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
+                            <span className="self-center text-xs" style={{ color: theme.node.muted }}>2–30 秒</span>
+                        </div>
+                    </SettingGroup>
+                    <AudioGenerationSetting checked={boolConfig(config.videoGenerateAudio, true)} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} />
+                    <SettingGroup title="输出" color={theme.node.muted}><SwitchRow label="添加水印" checked={boolConfig(config.videoWatermark, false)} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /></SettingGroup>
+                </> : null}
             </div>
         </ImageSettingsTheme>
     );

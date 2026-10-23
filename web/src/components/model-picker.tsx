@@ -106,7 +106,6 @@ export function ModelPicker({ config, value, channelId, capability, onChange, wo
                 if (nextValue === WANX_VIDEO_VALUE) {
                     onCodexImageGenSelect?.(false);
                     onWanxVideoSelect?.(true);
-                    onWorkflowChange?.(undefined);
                     return;
                 }
                 if (nextValue === CODEX_IMAGE_GEN_VALUE) {

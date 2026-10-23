@@ -17,6 +17,24 @@ async function activeTab() {
   return (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
 }
 
+async function sendToPage(tab, message) {
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (error) {
+    if (!/Receiving end does not exist/i.test(String(error))) throw new Error(`发送到页面失败：${String(error)}`);
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    } catch (injectionError) {
+      throw new Error(`无法注入页面脚本：${injectionError instanceof Error ? injectionError.message : String(injectionError)}`);
+    }
+    try {
+      return await chrome.tabs.sendMessage(tab.id, message);
+    } catch (retryError) {
+      throw new Error(`脚本已补注入，但页面仍未响应：${String(retryError)}`);
+    }
+  }
+}
+
 function isCanvasUrl(url = "") {
   return url.startsWith("http://localhost:3000/") || url.startsWith("http://127.0.0.1:3000/");
 }
@@ -32,8 +50,8 @@ async function sendToWanx() {
   showStatus("");
   try {
     const tab = await activeTab();
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "canvas:export" });
-    if (!response?.ok) throw new Error(response?.error || "发送失败");
+    const response = await sendToPage(tab, { type: "canvas:export" });
+    if (!response?.ok) throw new Error(`页面脚本已连接，但导出失败：${response?.error || "发送失败"}`);
     const details = response.skipped ? `，成功挂载 ${response.attached}/${response.files} 个素材，${response.skipped} 个需检查` : `，挂载 ${response.attached} 个素材`;
     showStatus(`提示词已发送${details}。请检查页面并手动点击生成。`);
   } catch (error) {
@@ -49,7 +67,7 @@ async function scanVideos() {
   showStatus("");
   try {
     const tab = await activeTab();
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "wanx:list-videos" });
+    const response = await sendToPage(tab, { type: "wanx:list-videos" });
     if (!response?.ok) throw new Error(response?.error || "扫描失败");
     if (!response.videos.length) {
       showStatus("页面里还没有可读取的视频");
@@ -67,7 +85,7 @@ async function scanVideos() {
       button.addEventListener("click", () => importVideo(video.candidateId, button));
       elements.videos.appendChild(button);
     });
-    showStatus(`找到 ${response.videos.length} 个页面视频；选中万相生成的结果回传`);
+    showStatus(`找到 ${response.videos.length} 个页面视频；此列表不识别任务归属，请先在网页确认后手动选择`);
   } catch (error) {
     showStatus(error instanceof Error ? error.message : "扫描失败", true);
   } finally {
@@ -80,7 +98,7 @@ async function importVideo(candidateId, button) {
   showStatus("");
   try {
     const tab = await activeTab();
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "wanx:import-video", candidateId });
+    const response = await sendToPage(tab, { type: "wanx:import-video", candidateId });
     if (!response?.ok) throw new Error(response?.error || "回传失败");
     showStatus("视频已导入画布并连接参考节点");
   } catch (error) {
@@ -102,6 +120,13 @@ async function initialize() {
     elements.label.textContent = "通义万相";
     elements.wanxActions.hidden = false;
     elements.scan.addEventListener("click", scanVideos);
+    const response = await chrome.runtime.sendMessage({ type: "bridge:get-session" });
+    const session = response?.session;
+    if (session?.autoSubmit && session.ready) {
+      const suffix = session.taskId ? `（任务 ${session.taskId.slice(-8)}）` : "";
+      if (session.taskState === "error") showStatus(session.taskError || "自动回传已停止，请检查结果", true);
+      else if (["awaiting", "running", "waiting-url", "importing"].includes(session.taskState)) showStatus(`正在追踪并自动回传${suffix}`);
+    }
     return;
   }
   elements.label.textContent = "请切换到本地画布或通义万相";

@@ -104,7 +104,7 @@ type CanvasAssistantPanelProps = {
     onCodexImageGenerationState?: (nodeId: string, running: boolean) => void;
     onCodexPromptOptimized?: (nodeId: string, prompt: string, originalPrompt: string) => void;
     onCollapseStart: () => void;
-    initialRequest?: { prompt: string; imagePrompt?: string; optimizeImagePrompt?: boolean; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[]; imageTargetNodeId?: string } | null;
+    initialRequest?: { prompt: string; imagePrompt?: string; originalPrompt?: string; optimizePromptOnly?: boolean; optimizePromptKind?: "image" | "video"; optimizationTargetNodeId?: string; references: CanvasAssistantReference[]; skills: CanvasAgentSkillSelection[]; imageTargetNodeId?: string } | null;
     onInitialRequestConsumed?: () => void;
 };
 
@@ -409,7 +409,7 @@ export function CanvasAssistantPanel({
         </>
     ) : undefined;
 
-    const sendMessage = async (text: string, savedReferences?: CanvasAssistantReference[], skillOverride?: CanvasAgentSkillSelection[] | null, showSelectedSkills = skillOverride === undefined && selectedSkills.length > 0, imageTargetNodeId?: string, imagePrompt?: string, optimizeImagePrompt = false) => {
+    const sendMessage = async (text: string, savedReferences?: CanvasAssistantReference[], skillOverride?: CanvasAgentSkillSelection[] | null, showSelectedSkills = skillOverride === undefined && selectedSkills.length > 0, imageTargetNodeId?: string, imagePrompt?: string, optimizePromptOnly = false, optimizePromptKind?: "image" | "video", optimizationTargetNodeId?: string, originalPrompt?: string) => {
         if (abortRef.current) return;
         if (mode === "codex" && codex.status !== "ready") { setView("connect"); appMessage.info("请先连接本地 Codex 服务"); return; }
         const session = activeSession || createSession(mode);
@@ -508,15 +508,15 @@ export function CanvasAssistantPanel({
             const modelText = omittedCodexImageCount
                 ? `${text}\n\n（${omittedCodexImageCount} 张参考图因读取失败或超出请求预算已省略。）`
                 : text;
-            // 图片节点生成每次使用独立 thread，避免生成图片在后续请求中累积，也不覆盖普通对话的 thread。
-            const isolatedImageThread = Boolean(imageTargetNodeId);
+            // 图片生成与独立提示词优化不复用普通对话的 thread。
+            const isolatedThread = Boolean(imageTargetNodeId || optimizationTargetNodeId);
             const run = mode === "codex" ? (input: Parameters<typeof runCanvasAgent>[0]) => codex.run({
-                ...input, optimizePromptOnly: optimizeImagePrompt, threadId: isolatedImageThread ? undefined : session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
+                ...input, optimizePromptOnly, optimizePromptKind, threadId: isolatedThread ? undefined : session.codexThreadId, serviceId: session.codexServiceId, model: codexModel?.model, effort: codexEffort,
                 onThread: (codexThreadId, codexServiceId) => {
-                    if (!isolatedImageThread) updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId }));
+                    if (!isolatedThread) updateSession(session.id, (current) => ({ ...current, codexThreadId, codexServiceId }));
                 },
                 onText: (text) => updateMessage(session.id, assistantId, { text }),
-                onImageGenerated: !optimizeImagePrompt && onCodexImageGenerated ? (dataUrl, revisedPrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt || revisedPrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
+                onImageGenerated: !optimizePromptOnly && onCodexImageGenerated ? (dataUrl, revisedPrompt, signal) => onCodexImageGenerated({ dataUrl, prompt: imagePrompt || revisedPrompt, sourceNodeIds: messageReferenceNodeIds, imageTargetNodeId }, signal) : undefined,
             }) : runCanvasAgent;
             const result = await run({
                 config: requestConfig,
@@ -528,7 +528,7 @@ export function CanvasAssistantPanel({
                 contextCheckpoint: session.contextCheckpoint,
                 preferredJsonMode: session.jsonToolFallbackKey === jsonToolFallbackKey ? session.jsonToolFallbackMode || "structured-json" : undefined,
                 getContext: getAgentContext,
-                executeAction: (action, signal = controller.signal) => optimizeImagePrompt
+                executeAction: (action, signal = controller.signal) => optimizePromptOnly
                     ? Promise.resolve({ ok: false, code: "optimization_only", message: "本轮只返回优化提示词，不执行画布操作" })
                     : executeCanvasTool(action, messageReferenceNodeIds, activeSkills, mode, signal),
                 signal: controller.signal,
@@ -544,9 +544,10 @@ export function CanvasAssistantPanel({
                         updatedAt: new Date().toISOString(),
                     })),
             });
-            if (optimizeImagePrompt && imageTargetNodeId) {
+            const promptTargetNodeId = optimizationTargetNodeId || imageTargetNodeId;
+            if (optimizePromptOnly && promptTargetNodeId) {
                 if (!result.reply.trim()) throw new Error("Codex 未返回优化提示词，请重试");
-                onCodexPromptOptimized?.(imageTargetNodeId, result.reply.trim(), imagePrompt || "");
+                onCodexPromptOptimized?.(promptTargetNodeId, result.reply.trim(), originalPrompt || imagePrompt || "");
             }
             updateSession(session.id, (current) => ({
                 ...current,
@@ -580,7 +581,7 @@ export function CanvasAssistantPanel({
         if (mode === "codex" && codex.status !== "ready") { setView("connect"); return; }
         consumedInitialRequestRef.current = initialRequest;
         onInitialRequestConsumed?.();
-        void sendMessage(initialRequest.prompt, initialRequest.references, initialRequest.skills, initialRequest.skills.length > 0, initialRequest.imageTargetNodeId, initialRequest.imagePrompt, initialRequest.optimizeImagePrompt);
+        void sendMessage(initialRequest.prompt, initialRequest.references, initialRequest.skills, initialRequest.skills.length > 0, initialRequest.imageTargetNodeId, initialRequest.imagePrompt, initialRequest.optimizePromptOnly, initialRequest.optimizePromptKind, initialRequest.optimizationTargetNodeId, initialRequest.originalPrompt);
     }, [initialRequest, onInitialRequestConsumed, mode, codex.status, isRunning]);
 
     const submit = async (nextPrompt = prompt, referenceIds = composerReferenceIds) => {

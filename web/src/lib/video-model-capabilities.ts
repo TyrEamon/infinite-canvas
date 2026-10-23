@@ -21,6 +21,7 @@ export function supportsVideoFrameReferences(modelName: string, protocol = "") {
     if (protocol === "autodl") return modelName === "minimax_h3_b99_002" || modelName === "minimax_h3_lightx2v";
     const model = modelKey(modelName);
     return (
+        (protocol === "dashscope" && ["wan3-0-video", "wan3-0-video-prime"].includes(model)) ||
         isAgnesVideoV25Model(model) ||
         isCogVideoX3Model(model) ||
         model === "bytedance-seedance-2" ||
@@ -60,6 +61,7 @@ export function supportsVideoAudioGeneration(modelName: string) {
     const model = modelKey(modelName);
     if (model.includes("motion-control")) return false;
     return (
+        model === "wan3-0-video" || model === "wan3-0-video-prime" ||
         isCogVideoX3Model(model) ||
         model === "kling-2-6-text-to-video" ||
         model === "kling-2-6-image-to-video" ||

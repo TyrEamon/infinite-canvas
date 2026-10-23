@@ -1,5 +1,6 @@
 import { readFileAsDataUrl } from "@/lib/image-utils";
 import { audioMimeType } from "@/lib/audio-generation";
+import { dashScopeWanVideoTranslation, isDashScopeWanVideoModel } from "@/lib/dashscope-video";
 import { modelChannelAttributionHeaders } from "@/lib/model-channel";
 import { translationPrograms, translationVariableNames, type TranslationVariables } from "@/lib/channel-parameter-translation";
 import { channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
@@ -41,11 +42,13 @@ export async function findParameterTranslation(config: AiConfig): Promise<Matche
     if (!channelId) return null;
     if (config.channelMode === "remote") {
         const channel = config.publicChannels.find((item) => item.id === channelId);
-        return channel?.parameterTranslationModels?.includes(config.model) ? { channelId, source: "", timeout: channel.timeout || 600, accountProxy: true } : null;
+        return channel?.parameterTranslationModels?.includes(config.model) || isDashScopeWanVideoModel(channel?.protocol || "", config.model) ? { channelId, source: "", timeout: channel?.timeout || 600, accountProxy: true } : null;
     }
+    const channel = localChannelForActiveModel(config);
     const source = (await useChannelTranslationStore.getState().load(user?.id || "guest"))[channelId];
-    if (!source?.trim() || !(await translationPrograms(source))[config.model]) return null;
-    return { channelId, source, timeout: Number(config.timeout) || 600, accountProxy: Boolean(token) };
+    if (source?.trim() && (await translationPrograms(source))[config.model]) return { channelId, source, timeout: Number(config.timeout) || 600, accountProxy: Boolean(token) };
+    if (!isDashScopeWanVideoModel(channel?.protocol || "", config.model)) return null;
+    return { channelId, source: dashScopeWanVideoTranslation, timeout: Number(config.timeout) || 600, accountProxy: Boolean(token) };
 }
 
 export function translationHeaders(config: AiConfig, match: MatchedTranslation): Record<string, string> {

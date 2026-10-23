@@ -84,6 +84,9 @@ func AdminTestChannelModel(index *int, channel model.ModelChannel, modelName str
 	if err != nil {
 		return "", err
 	}
+	if isDashScopeWanVideoModel(resolved.Protocol, modelName) {
+		return "万相 3.0 是异步视频模型，请在视频创作台测试生成。", nil
+	}
 	translation, err := NewParameterTranslation(resolved, modelName, map[string]any{"prompt": "test", "count": 1})
 	if err != nil {
 		return "", err

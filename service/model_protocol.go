@@ -9,12 +9,13 @@ import (
 )
 
 const (
-	ModelChannelProtocolOpenAI   = "openai"
-	ModelChannelProtocolGrok2API = "grok2api"
-	ModelChannelProtocolAPIMart  = "apimart"
-	ModelChannelProtocolKIE      = "kie"
-	ModelChannelProtocolAutoDL   = "autodl"
-	ModelChannelProtocolArk      = "ark"
+	ModelChannelProtocolOpenAI     = "openai"
+	ModelChannelProtocolGrok2API   = "grok2api"
+	ModelChannelProtocolAPIMart    = "apimart"
+	ModelChannelProtocolKIE        = "kie"
+	ModelChannelProtocolAutoDL     = "autodl"
+	ModelChannelProtocolArk        = "ark"
+	ModelChannelProtocolDashScope  = "dashscope"
 	ModelChannelProtocolTokenDance = "tokendance"
 )
 
@@ -31,7 +32,7 @@ type modelProtocolRule struct {
 }
 
 var modelProtocolRegistry map[string]modelProtocolAdapter
-var modelProtocolIDs = []string{ModelChannelProtocolOpenAI, ModelChannelProtocolGemini, ModelChannelProtocolGrok2API, ModelChannelProtocolMiniMax, ModelChannelProtocolAPIMart, ModelChannelProtocolKIE, ModelChannelProtocolMiMo, ModelChannelProtocolAutoDL, ModelChannelProtocolArk, ModelChannelProtocolTokenDance}
+var modelProtocolIDs = []string{ModelChannelProtocolOpenAI, ModelChannelProtocolGemini, ModelChannelProtocolGrok2API, ModelChannelProtocolMiniMax, ModelChannelProtocolAPIMart, ModelChannelProtocolKIE, ModelChannelProtocolMiMo, ModelChannelProtocolAutoDL, ModelChannelProtocolArk, ModelChannelProtocolDashScope, ModelChannelProtocolTokenDance}
 
 func init() {
 	compatible := modelProtocolAdapter{
@@ -42,7 +43,7 @@ func init() {
 		models:    fetchOpenAIAdminChannelModels,
 		testModel: testOpenAIChannelModel,
 	}
-	modelProtocolRegistry = make(map[string]modelProtocolAdapter, 11)
+	modelProtocolRegistry = make(map[string]modelProtocolAdapter, 12)
 	for _, id := range modelProtocolIDs {
 		modelProtocolRegistry[id] = compatible
 	}
@@ -107,6 +108,9 @@ func init() {
 	ark := compatible
 	ark.testModel = testArkSeedanceChannelModel
 	modelProtocolRegistry[ModelChannelProtocolArk] = ark
+	dashScope := compatible
+	dashScope.models = func(model.ModelChannel) ([]string, error) { return []string{"wan3.0-video", "wan3.0-video-prime"}, nil }
+	modelProtocolRegistry[ModelChannelProtocolDashScope] = dashScope
 	tokenDance := compatible
 	tokenDance.buildURL = BuildTokenDanceChannelURL
 	modelProtocolRegistry[ModelChannelProtocolTokenDance] = tokenDance
@@ -117,6 +121,9 @@ func init() {
 
 // 发现模型、配置测试与生成的命中规则不同，分别保留原有优先级。
 var modelDiscoveryRules = []modelProtocolRule{
+	{ModelChannelProtocolDashScope, func(channel model.ModelChannel, _ string) bool {
+		return strings.EqualFold(channel.Protocol, ModelChannelProtocolDashScope)
+	}},
 	{ModelChannelProtocolAutoDL, func(channel model.ModelChannel, _ string) bool { return IsAutoDLChannel(channel) }},
 	{ModelChannelProtocolGemini, func(channel model.ModelChannel, _ string) bool { return IsGeminiChannel(channel) }},
 	{ModelChannelProtocolMiniMax, func(channel model.ModelChannel, _ string) bool { return IsMiniMaxChannel(channel) }},

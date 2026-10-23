@@ -11,6 +11,7 @@ import { deleteCanvasProjects, stopCanvasTask } from "@/services/api/canvas-task
 import { createCanvasImageTask, pollCanvasImageTaskStatus, requestImageQuestion, type CanvasImageTask } from "@/services/api/image";
 import { createCanvasAudioTask, pollCanvasAudioTaskStatus, type CanvasAudioTask } from "@/services/api/audio";
 import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, type VideoResponse } from "@/services/api/video";
+import { requestCanvasAgentTurn } from "@/services/api/canvas-agent";
 import { comfyOutputStorageKey, getWorkflowTask, submitWorkflowTask, workflowMediaSource, type WorkflowGenerationTask } from "@/services/api/workflow-generation";
 import type { WorkflowRef } from "@/lib/workflow-channel";
 import { channelProtocolForConfig, defaultConfig, resolveModelForCapability, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -367,7 +368,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig | null>(null);
-    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; imagePrompt?: string; optimizeImagePrompt?: boolean; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
+    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; imagePrompt?: string; originalPrompt?: string; optimizePromptOnly?: boolean; optimizePromptKind?: "image" | "video"; optimizationTargetNodeId?: string; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("select");
     const [size, setSize] = useState({ width: 1200, height: 720 });
@@ -1902,6 +1903,14 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const selectedId = data.nodeId || Array.from(selectedNodeIdsRef.current)[0];
                     const selectedNode = nodesRef.current.find((node) => node.id === selectedId);
                     if (!selectedNode) throw new Error("请先在画布选中一个提示词或素材节点");
+                    const wanxSettings = selectedNode.type === CanvasNodeType.Video && selectedNode.metadata?.wanxVideoModel ? {
+                        resolution: selectedNode.metadata.wanxResolution || "",
+                        ratio: selectedNode.metadata.wanxRatio || "",
+                        duration: selectedNode.metadata.wanxDuration || "",
+                    } : undefined;
+                    if (wanxSettings?.duration && wanxSettings.duration !== "-1" && (!/^\d+$/.test(wanxSettings.duration) || Number(wanxSettings.duration) < 2 || Number(wanxSettings.duration) > 30)) {
+                        throw new Error("万相时长须为 2–30 秒，或选择智能时长");
+                    }
 
                     const sourcePrompt = selectedNode.type === CanvasNodeType.Text
                         ? selectedNode.metadata?.content || selectedNode.metadata?.prompt || ""
@@ -1946,6 +1955,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             prompt: context.prompt,
                             sourceNodeIds: Array.from(new Set([selectedNode.id, ...textInputNodeIds, ...files.map((file) => file.id)])),
                             targetNodeId: selectedNode.type === CanvasNodeType.Video ? selectedNode.id : undefined,
+                            settings: wanxSettings,
                             files,
                             canvasUrl: window.location.href,
                         },
@@ -1996,7 +2006,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         center.y + estimatedSize.height / 2 + 24 > existing.position.y,
                     ); attempt += 1) center.y += estimatedSize.height + 72;
                     const baseNode = buildImportedVideoNode(uploaded, filename, center);
-                    const node = data.autoSubmit ? { ...baseNode, metadata: { ...baseNode.metadata, prompt: data.prompt, model: WANX_WEB_VIDEO_MODEL, wanxVideoModel: true } } : baseNode;
+                    const node = data.autoSubmit ? { ...baseNode, metadata: { ...baseNode.metadata, prompt: data.prompt, model: WANX_WEB_VIDEO_MODEL, wanxVideoModel: true, wanxResolution: targetNode?.metadata?.wanxResolution, wanxRatio: targetNode?.metadata?.wanxRatio, wanxDuration: targetNode?.metadata?.wanxDuration } } : baseNode;
                     const currentConnections = connectionsRef.current;
                     const createdConnections = sourceNodes.flatMap((source) => {
                         if (currentConnections.some((connection) => connection.fromNodeId === source.id && connection.toNodeId === node.id)) return [];
@@ -2032,6 +2042,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 const nextNodes = nodesRef.current.map((node) => node.id === data.targetNodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node);
                 nodesRef.current = nextNodes;
                 setNodes(nextNodes);
+                message.error(errorDetails);
                 respond(data.requestId!, { ok: true });
             }
         };
@@ -3117,7 +3128,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setNodes(nextNodes);
     }, []);
 
-    const [optimizedImagePrompt, setOptimizedImagePrompt] = useState<{ nodeId: string; prompt: string; originalPrompt: string } | null>(null);
+    const [optimizedPrompt, setOptimizedPrompt] = useState<{ kind: "image" | "wanx-video"; nodeId: string; prompt: string; originalPrompt: string } | null>(null);
     const startCodexImageGeneration = useCallback((nodeId: string, prompt: string, optimizeImagePrompt = false) => {
         const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
         if (!imageNode || !prompt.trim()) return;
@@ -3139,7 +3150,10 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setInitialAgentRequest({
             prompt: optimizeImagePrompt ? `请优化以下图片提示词，只返回完整优化稿正文，供我编辑和决定是否采用。本轮禁止生成图片或修改画布。保留主体、服装、场景、构图、标识和负面约束，不引入其他主题。附图仅用于理解本轮参考。\n\n原提示词：\n${prompt.trim()}\n\n${imageSettingsPrompt}` : requestPrompt,
             imagePrompt: prompt.trim(),
-            optimizeImagePrompt,
+            originalPrompt: optimizeImagePrompt ? prompt.trim() : undefined,
+            optimizePromptOnly: optimizeImagePrompt,
+            optimizePromptKind: optimizeImagePrompt ? "image" : undefined,
+            optimizationTargetNodeId: optimizeImagePrompt ? imageNode.id : undefined,
             references,
             skills: [],
             imageTargetNodeId: imageNode.id,
@@ -3194,7 +3208,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 window.addEventListener("message", handleResponse);
                 window.postMessage({ source: "infinite-canvas-page", type: "wanx-generate", requestId, nodeId, prompt: normalizedPrompt }, window.location.origin);
             });
-            if (submitted) message.success("已在万象网页提交生成；完成后点扩展图标扫描并回传视频");
+            if (submitted) message.success("已点击万象网页生成；捕获任务 ID 后将自动回传画布");
             else message.info("提示词和素材已送到万象页，请手动点生成；完成后点扩展图标扫描并回传视频");
         } catch (error) {
             const errorDetails = error instanceof Error ? error.message : "万象网页生成提交失败";
@@ -3204,6 +3218,54 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             message.error(errorDetails);
         }
     }, [message]);
+
+    const optimizeWanxPrompt = useCallback(async (nodeId: string, prompt: string, source: "api" | "codex") => {
+        const videoNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel);
+        const originalPrompt = prompt.trim();
+        if (!videoNode || !originalPrompt) return;
+        const settings = [
+            videoNode.metadata?.wanxResolution && `分辨率 ${videoNode.metadata.wanxResolution}`,
+            videoNode.metadata?.wanxRatio && `画面比例 ${videoNode.metadata.wanxRatio}`,
+            videoNode.metadata?.wanxDuration && `时长 ${videoNode.metadata.wanxDuration === "-1" ? "智能" : `${videoNode.metadata.wanxDuration} 秒`}`,
+        ].filter(Boolean).join("；") || "沿用万相网页当前设置";
+        const request = `请优化以下通义万相视频生成提示词，只返回可编辑的完整优化稿正文。本轮只优化文本，不生成视频或修改画布。保留原文主体、角色数量、动作、场景、风格、镜头、台词和限制，不引入其他主题；让动作时序与镜头运动更清晰，不改动画布设置。\n\n视频设置：${settings}\n\n原提示词：\n${originalPrompt}`;
+        if (source === "codex") {
+            setInitialAgentRequest({ prompt: request, originalPrompt, optimizePromptOnly: true, optimizePromptKind: "video", optimizationTargetNodeId: nodeId, references: [], skills: [] });
+            handleAgentConfigChange({ mode: "codex" });
+            setAssistantMounted(true);
+            setAgentPanel((current) => ({ ...current, open: true }));
+            return;
+        }
+        const textModel = effectiveConfig.textModel || effectiveConfig.model;
+        const requestConfig = { ...effectiveConfig, model: textModel, activeChannelId: effectiveConfig.textChannelId || effectiveConfig.activeChannelId, apiMode: resolvedAgentConfig.textApiMode, textStreaming: resolvedAgentConfig.textStreaming === true, textReasoningEnabled: resolvedAgentConfig.textReasoningEnabled === true };
+        if (!isAiConfigReady(requestConfig, textModel)) {
+            message.warning("请先配置可用的文本模型与提供商 API");
+            openConfigDialog(true);
+            return;
+        }
+        try {
+            const result = await requestCanvasAgentTurn({
+                config: requestConfig,
+                systemPrompt: "你只负责优化通义万相视频生成提示词，不调用工具，也不执行生成。只输出优化后的提示词纯文本，不加解释、前言或 Markdown；严格保留用户的主体、场景和限制，避免与视频设置冲突。",
+                messages: [{ role: "user", content: request }],
+                tools: [],
+                toolMode: "prompt-json",
+            });
+            if (!result.content.trim()) throw new Error("文本模型未返回优化提示词，请重试");
+            setOptimizedPrompt({ kind: "wanx-video", nodeId, prompt: result.content.trim(), originalPrompt });
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "视频提示词优化失败");
+        }
+    }, [effectiveConfig, handleAgentConfigChange, isAiConfigReady, message, openConfigDialog, resolvedAgentConfig.textApiMode, resolvedAgentConfig.textReasoningEnabled, resolvedAgentConfig.textStreaming]);
+
+    const generateReviewedPrompt = useCallback((useOriginal: boolean) => {
+        if (!optimizedPrompt) return;
+        const prompt = useOriginal ? optimizedPrompt.originalPrompt : optimizedPrompt.prompt.trim();
+        if (!prompt) return;
+        if (optimizedPrompt.kind === "image") startCodexImageGeneration(optimizedPrompt.nodeId, prompt);
+        else void startWanxVideoGeneration(optimizedPrompt.nodeId, prompt);
+        setOptimizedPrompt(null);
+    }, [optimizedPrompt, startCodexImageGeneration, startWanxVideoGeneration]);
 
     const startTitleEditing = useCallback(() => {
         setTitleDraft(currentProject?.title || "未命名画布");
@@ -4716,6 +4778,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         }}
                                         onCodexGenerate={startCodexImageGeneration}
                                         onWanxGenerate={startWanxVideoGeneration}
+                                        onWanxOptimize={optimizeWanxPrompt}
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}
@@ -5136,7 +5199,11 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     getAgentContext={getCanvasAgentContext}
                     onExecuteAction={executeCanvasAgentAction}
                     onCodexImageGenerated={saveCodexImageToCanvas}
-                    onCodexPromptOptimized={(nodeId, prompt, originalPrompt) => setOptimizedImagePrompt({ nodeId, prompt, originalPrompt })}
+                    onCodexPromptOptimized={(nodeId, prompt, originalPrompt) => {
+                        const node = nodesRef.current.find((item) => item.id === nodeId);
+                        if (node?.type === CanvasNodeType.Image) setOptimizedPrompt({ kind: "image", nodeId, prompt, originalPrompt });
+                        else if (node?.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel) setOptimizedPrompt({ kind: "wanx-video", nodeId, prompt, originalPrompt });
+                    }}
                     onCodexImageGenerationState={setCodexImageGenerationState}
                     onCollapseStart={() =>
                         setAgentPanel((current) => ({ ...current, open: false }))
@@ -5145,24 +5212,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onInitialRequestConsumed={() => setInitialAgentRequest(null)}
                 />
             ) : null}
-            <Modal title="审核 AI 优化提示词" open={Boolean(optimizedImagePrompt)} centered width={760} onCancel={() => setOptimizedImagePrompt(null)} footer={[
-                <Button key="cancel" onClick={() => setOptimizedImagePrompt(null)}>取消</Button>,
-                <Button key="original" onClick={() => {
-                    if (!optimizedImagePrompt) return;
-                    startCodexImageGeneration(optimizedImagePrompt.nodeId, optimizedImagePrompt.originalPrompt);
-                    setOptimizedImagePrompt(null);
-                }}>使用原文生成</Button>,
-                <Button key="apply" type="primary" disabled={!optimizedImagePrompt?.prompt.trim()} onClick={() => {
-                    if (!optimizedImagePrompt) return;
-                    startCodexImageGeneration(optimizedImagePrompt.nodeId, optimizedImagePrompt.prompt);
-                    setOptimizedImagePrompt(null);
-                }}>采用并生成</Button>,
+            <Modal title="审核 AI 优化提示词" open={Boolean(optimizedPrompt)} centered width={760} onCancel={() => setOptimizedPrompt(null)} footer={[
+                <Button key="cancel" onClick={() => setOptimizedPrompt(null)}>取消</Button>,
+                <Button key="original" onClick={() => generateReviewedPrompt(true)}>使用原文生成</Button>,
+                <Button key="apply" type="primary" disabled={!optimizedPrompt?.prompt.trim()} onClick={() => generateReviewedPrompt(false)}>采用并生成</Button>,
             ]}>
                 <details className="mb-3">
                     <summary className="cursor-pointer">查看原提示词</summary>
-                    <p className="mt-2 whitespace-pre-wrap break-words text-sm">{optimizedImagePrompt?.originalPrompt}</p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm">{optimizedPrompt?.originalPrompt}</p>
                 </details>
-                <Input.TextArea aria-label="可编辑的 AI 优化提示词" value={optimizedImagePrompt?.prompt || ""} onChange={(event) => setOptimizedImagePrompt((current) => current ? { ...current, prompt: event.target.value } : null)} autoSize={{ minRows: 12, maxRows: 22 }} />
+                <Input.TextArea aria-label="可编辑的 AI 优化提示词" value={optimizedPrompt?.prompt || ""} onChange={(event) => setOptimizedPrompt((current) => current ? { ...current, prompt: event.target.value } : null)} autoSize={{ minRows: 12, maxRows: 22 }} />
             </Modal>
         </main>
     );

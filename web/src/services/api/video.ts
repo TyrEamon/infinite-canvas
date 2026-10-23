@@ -4,6 +4,7 @@ import { WorkflowRequestError } from "./workflow-generation";
 import { BrowserParameterTranslation, findParameterTranslation, normalizeTranslationAspectRatio, translationBody, translationHeaders, translationMediaAddress, type MatchedTranslation, type TranslationInput, type TranslationResult } from "./channel-parameter-translation";
 
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
+import { isDashScopeWanVideoModel } from "@/lib/dashscope-video";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
 import { modelChannelAttributionHeaders } from "@/lib/model-channel";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
@@ -14,6 +15,7 @@ import { autoDLBaseUrl, getAutoDLCapabilities } from "@/lib/autodl";
 import { fetchAutoDLWorkflow } from "./autodl";
 import { isAgnesVideoV25Model, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
 import { resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer } from "@/services/file-storage";
+import { getStorageObjectInfo } from "@/services/api/storage";
 import { autoSyncToCloud, imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
 import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig, type VideoElementReference } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -152,8 +154,48 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 }
 
 async function createTranslatedVideoTask(config: AiConfig, match: MatchedTranslation, prompt: string, references: Required<VideoReferenceInput>, options: VideoTaskCreateOptions, onProgress?: VideoProgressHandler): Promise<CreatedVideoGenerationTask> {
-    const imageURL = async (image: ReferenceImage) => publicHttpUrl(image.url) || publicHttpUrl(image.dataUrl) || imageToDataUrl(image);
-    const mediaURL = async (media: ReferenceAudio) => translationMediaAddress(await resolveMediaUrl(media.storageKey, media.url));
+    const dashScopeWan = isDashScopeWanVideoModel(channelProtocolForConfig(config), config.model);
+    if (dashScopeWan) {
+        if ((references.firstFrame || references.lastFrame) && (references.references.length || references.videoReferences.length || references.audioReferences.length)) throw new VideoRequestError("万相 3.0 的首尾帧不能与普通图片、视频或音频参考混用");
+        if (references.references.length > 10 || references.videoReferences.length > 5 || references.audioReferences.length > 5) throw new VideoRequestError("万相 3.0 最多支持 10 张参考图、5 段参考视频和 5 段参考音频");
+        const seconds = Number(config.videoSeconds);
+        if (seconds !== -1 && (!Number.isInteger(seconds) || seconds < 2 || seconds > 30)) throw new VideoRequestError("万相 3.0 时长须为 2–30 秒或智能时长");
+        const inputVideoSeconds = references.videoReferences.reduce((total, reference) => total + (reference.durationMs || 0) / 1000, 0);
+        if (inputVideoSeconds > 15 || seconds !== -1 && inputVideoSeconds + seconds > 30) throw new VideoRequestError("万相 3.0 参考视频合计不超过 15 秒，输入与输出总时长不超过 30 秒");
+        if (!["480", "720", "1080"].includes(config.vquality.replace(/p$/i, ""))) throw new VideoRequestError("万相 3.0 分辨率只支持 480P、720P、1080P");
+        const ratio = normalizeTranslationAspectRatio(config.size);
+        if (ratio && !["auto", "adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(ratio)) throw new VideoRequestError("万相 3.0 不支持当前画面比例，请在视频设置中重新选择");
+    }
+    const imageURL = async (image: ReferenceImage) => {
+        const url = publicHttpUrl(image.url) || publicHttpUrl(image.dataUrl) || await imageToDataUrl(image);
+        if (dashScopeWan && !url) throw new VideoRequestError("万相 3.0 的参考图片不可用");
+        return url;
+    };
+    const publicMediaURL = async (media: ReferenceVideo | ReferenceAudio, resolvedUrl: string) => {
+        const direct = publicHttpUrl(resolvedUrl) || publicHttpUrl(media.url);
+        if (direct || !media.storageKey?.startsWith("server:") || media.storageKey.startsWith("server:webdav:")) return direct;
+        const id = media.storageKey.slice("server:".length);
+        const info = await getStorageObjectInfo(id).catch(() => null);
+        return info ? publicHttpUrl(info.publicUrl || `/api/files/${encodeURIComponent(id)}/content`) : "";
+    };
+    const mediaURL = async (media: ReferenceAudio) => {
+        const url = await resolveMediaUrl(media.storageKey, media.url);
+        if (dashScopeWan) {
+            const publicUrl = await publicMediaURL(media, url);
+            if (!publicUrl) throw new VideoRequestError("万相 3.0 的参考音频需要公网可访问的 URL");
+            return publicUrl;
+        }
+        return translationMediaAddress(url);
+    };
+    const videoURL = async (reference: ReferenceVideo) => {
+        const url = await elementReferenceToInputUrl({ ...reference, kind: "video" });
+        if (dashScopeWan) {
+            const publicUrl = await publicMediaURL(reference, url);
+            if (!publicUrl) throw new VideoRequestError("万相 3.0 的参考视频需要公网可访问的 URL");
+            return publicUrl;
+        }
+        return url;
+    };
     const input: TranslationInput = {
         kind: "video",
         variables: {
@@ -168,7 +210,7 @@ async function createTranslatedVideoTask(config: AiConfig, match: MatchedTransla
             generateAudio: boolConfig(config.videoGenerateAudio, true),
             watermark: boolConfig(config.videoWatermark, false),
             images: await Promise.all(references.references.map(imageURL)),
-            videos: await Promise.all(references.videoReferences.map((reference) => elementReferenceToInputUrl({ ...reference, kind: "video" }))),
+            videos: await Promise.all(references.videoReferences.map(videoURL)),
             audios: await Promise.all(references.audioReferences.map(mediaURL)),
             firstFrame: references.firstFrame ? await imageURL(references.firstFrame) : "",
             lastFrame: references.lastFrame ? await imageURL(references.lastFrame) : "",

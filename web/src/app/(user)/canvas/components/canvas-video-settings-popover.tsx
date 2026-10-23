@@ -15,6 +15,29 @@ import type { CanvasNodeMetadata } from "../types";
 
 export type CanvasVideoFrameOption = { nodeId: string; label: string; previewUrl?: string };
 export type CanvasVideoResourceOption = { nodeId: string; kind: "text" | "image" | "video" | "audio"; label: string; previewUrl?: string; text?: string };
+type WanxOptions = { resolution: string[]; ratio: string[]; duration: string[] };
+
+function readWanxOptions(): Promise<WanxOptions> {
+    return new Promise((resolve, reject) => {
+        const requestId = crypto.randomUUID();
+        const finish = (error?: Error, options?: WanxOptions) => {
+            window.clearTimeout(timeout);
+            window.removeEventListener("message", handleResponse);
+            if (error) reject(error);
+            else if (options) resolve(options);
+        };
+        const timeout = window.setTimeout(() => finish(new Error("读取万相网页选项超时；请确认扩展已启用并刷新画布")), 35000);
+        const handleResponse = (event: MessageEvent) => {
+            if (event.source !== window || event.origin !== window.location.origin || event.data?.source !== "infinite-canvas-wanx-extension" || event.data?.type !== "wanx-options-response" || event.data?.requestId !== requestId) return;
+            const options = event.data.options;
+            if (!event.data.ok) finish(new Error(event.data.error || "读取万相网页选项失败"));
+            else if (options && [options.resolution, options.ratio, options.duration].every(Array.isArray)) finish(undefined, options);
+            else finish(new Error("万相网页返回的设置选项无效"));
+        };
+        window.addEventListener("message", handleResponse);
+        window.postMessage({ source: "infinite-canvas-page", type: "wanx-get-options", requestId }, window.location.origin);
+    });
+}
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
@@ -30,14 +53,17 @@ type CanvasVideoSettingsPopoverProps = {
     buttonIcon?: ReactNode;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
     visualOnly?: boolean;
+    wanx?: boolean;
 };
 
-export function CanvasVideoSettingsPopover({ config, onConfigChange, frameOptions = [], resourceOptions = [], metadata, firstFrameNodeId, lastFrameNodeId, onFrameChange, onMetadataChange, buttonClassName, buttonIcon, placement = "topLeft", visualOnly = false }: CanvasVideoSettingsPopoverProps) {
+export function CanvasVideoSettingsPopover({ config, onConfigChange, frameOptions = [], resourceOptions = [], metadata, firstFrameNodeId, lastFrameNodeId, onFrameChange, onMetadataChange, buttonClassName, buttonIcon, placement = "topLeft", visualOnly = false, wanx = false }: CanvasVideoSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
+    const [wanxOptions, setWanxOptions] = useState<WanxOptions | null>(null);
+    const [wanxOptionsError, setWanxOptionsError] = useState("");
     const model = visualOnly ? config.videoModel || config.model : config.model || config.videoModel;
     const autodl = isAutoDLConfig(config, model);
 
@@ -63,15 +89,30 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, frameOption
         };
     }, [open, autodl]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} frameOptions={frameOptions} resourceOptions={resourceOptions} metadata={metadata} firstFrameNodeId={firstFrameNodeId} lastFrameNodeId={lastFrameNodeId} onFrameChange={onFrameChange} onMetadataChange={onMetadataChange} visualOnly={visualOnly} /> : null;
+    useEffect(() => {
+        if (!open || !wanx) return;
+        let active = true;
+        setWanxOptions(null);
+        setWanxOptionsError("正在读取万相网页当前选项…");
+        void readWanxOptions().then((options) => {
+            if (active) {
+                setWanxOptions(options);
+                setWanxOptionsError("");
+            }
+        }).catch((error) => {
+            if (active) setWanxOptionsError(error instanceof Error ? error.message : "读取万相网页选项失败");
+        });
+        return () => { active = false; };
+    }, [open, wanx]);
+
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} frameOptions={frameOptions} resourceOptions={resourceOptions} metadata={metadata} firstFrameNodeId={firstFrameNodeId} lastFrameNodeId={lastFrameNodeId} onFrameChange={onFrameChange} onMetadataChange={onMetadataChange} visualOnly={visualOnly} wanx={wanx} wanxOptions={wanxOptions} wanxOptionsError={wanxOptionsError} /> : null;
 
     return (
         <>
             <span ref={buttonRef} className="inline-flex min-w-0">
                 <Button size="small" type="text" className={buttonClassName || "!h-8 !max-w-[170px] !justify-start !rounded-full !px-2.5"} style={{ background: theme.node.fill, color: theme.node.text }} icon={buttonIcon || <Settings2 className="size-3.5" />} onClick={() => setOpen((current) => !current)}>
                     <span className="truncate">
-                        {videoResolutionLabel(config.vquality)} · {videoSizeLabel(config.size)}
-                        {visualOnly ? null : <> · {videoSecondsLabel(config.videoSeconds)}</>}
+                        {wanx ? `万相 · ${metadata?.wanxResolution || "网页当前"}` : <>{videoResolutionLabel(config.vquality)} · {videoSizeLabel(config.size)}{visualOnly ? null : <> · {videoSecondsLabel(config.videoSeconds)}</>}</>}
                     </span>
                 </Button>
             </span>
@@ -80,7 +121,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, frameOption
     );
 }
 
-function VideoSettingsPortal({ buttonRect, panelRef, placement, theme, config, onConfigChange, frameOptions, resourceOptions, metadata, firstFrameNodeId, lastFrameNodeId, onFrameChange, onMetadataChange, visualOnly }: { buttonRect: DOMRect; panelRef: RefObject<HTMLDivElement | null>; placement: CanvasVideoSettingsPopoverProps["placement"]; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; config: AiConfig; onConfigChange: CanvasVideoSettingsPopoverProps["onConfigChange"]; frameOptions: CanvasVideoFrameOption[]; resourceOptions: CanvasVideoResourceOption[]; metadata?: CanvasNodeMetadata; firstFrameNodeId?: string; lastFrameNodeId?: string; onFrameChange?: CanvasVideoSettingsPopoverProps["onFrameChange"]; onMetadataChange?: CanvasVideoSettingsPopoverProps["onMetadataChange"]; visualOnly: boolean }) {
+function VideoSettingsPortal({ buttonRect, panelRef, placement, theme, config, onConfigChange, frameOptions, resourceOptions, metadata, firstFrameNodeId, lastFrameNodeId, onFrameChange, onMetadataChange, visualOnly, wanx, wanxOptions, wanxOptionsError }: { buttonRect: DOMRect; panelRef: RefObject<HTMLDivElement | null>; placement: CanvasVideoSettingsPopoverProps["placement"]; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; config: AiConfig; onConfigChange: CanvasVideoSettingsPopoverProps["onConfigChange"]; frameOptions: CanvasVideoFrameOption[]; resourceOptions: CanvasVideoResourceOption[]; metadata?: CanvasNodeMetadata; firstFrameNodeId?: string; lastFrameNodeId?: string; onFrameChange?: CanvasVideoSettingsPopoverProps["onFrameChange"]; onMetadataChange?: CanvasVideoSettingsPopoverProps["onMetadataChange"]; visualOnly: boolean; wanx: boolean; wanxOptions: WanxOptions | null; wanxOptionsError: string }) {
     const width = 356;
     const gap = 8;
     const margin = 12;
@@ -103,10 +144,11 @@ function VideoSettingsPortal({ buttonRect, panelRef, placement, theme, config, o
     return createPortal(
         <div ref={panelRef} className="canvas-image-settings-popover" style={style} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
             <div className="space-y-4">
-                <div className="text-lg font-semibold">视频设置</div>
-                {!visualOnly && isKlingMotionControl ? <CharacterOrientationSetting value={config.videoCharacterOrientation} theme={theme} onChange={(value) => onConfigChange("videoCharacterOrientation", value)} /> : null}
-                {!visualOnly && isKlingV3 ? <KlingV3AdvancedSettings config={config} metadata={metadata} resourceOptions={resourceOptions} theme={theme} isKIEKlingV3={isKIEKlingV3} kieKlingOmni={kieKlingOmni} onConfigChange={onConfigChange} onMetadataChange={onMetadataChange} /> : null}
-                {!visualOnly && frameReferencesEnabled ? (
+                <div className="text-lg font-semibold">{wanx ? "万相视频设置" : "视频设置"}</div>
+                {wanx ? <WanxSettingsPanel metadata={metadata} theme={theme} options={wanxOptions} error={wanxOptionsError} onChange={onMetadataChange} /> : null}
+                {!wanx && !visualOnly && isKlingMotionControl ? <CharacterOrientationSetting value={config.videoCharacterOrientation} theme={theme} onChange={(value) => onConfigChange("videoCharacterOrientation", value)} /> : null}
+                {!wanx && !visualOnly && isKlingV3 ? <KlingV3AdvancedSettings config={config} metadata={metadata} resourceOptions={resourceOptions} theme={theme} isKIEKlingV3={isKIEKlingV3} kieKlingOmni={kieKlingOmni} onConfigChange={onConfigChange} onMetadataChange={onMetadataChange} /> : null}
+                {!wanx && !visualOnly && frameReferencesEnabled ? (
                     <CanvasSettingGroup title="首尾帧" color={theme.node.muted}>
                         <div className="grid gap-2 rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke }}>
                             <FrameReferencePicker label="首帧" value={firstFrameValue} options={frameOptions} theme={theme} onChange={(value) => onFrameChange?.({ firstFrameNodeId: value || undefined })} />
@@ -114,11 +156,27 @@ function VideoSettingsPortal({ buttonRect, panelRef, placement, theme, config, o
                         </div>
                     </CanvasSettingGroup>
                 ) : null}
-                <VideoSettingsPanel config={config} modelName={visualOnly ? config.videoModel || config.model : undefined} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} showTitle={false} className="space-y-4" hideNegativePrompt={isKlingV3} visualOnly={visualOnly} />
+                {!wanx ? <VideoSettingsPanel config={config} modelName={visualOnly ? config.videoModel || config.model : undefined} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} showTitle={false} className="space-y-4" hideNegativePrompt={isKlingV3} visualOnly={visualOnly} /> : null}
             </div>
         </div>,
         document.body,
     );
+}
+
+function WanxSettingsPanel({ metadata, theme, options, error, onChange }: { metadata?: CanvasNodeMetadata; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; options: WanxOptions | null; error: string; onChange?: (patch: Partial<CanvasNodeMetadata>) => void }) {
+    const resolution = metadata?.wanxResolution || "";
+    const ratio = metadata?.wanxRatio || "";
+    const duration = metadata?.wanxDuration || "";
+    const seconds = (options?.duration || []).filter((value) => /^\d+$/.test(value)).map(Number).sort((a, b) => a - b);
+    const consecutive = seconds.every((value, index) => index === 0 || value === seconds[index - 1] + 1);
+    const unavailable = Boolean((resolution && !options?.resolution.includes(resolution)) || (ratio && !options?.ratio.includes(ratio)) || (duration && !options?.duration.includes(duration)));
+    const missing = options ? ([ ["分辨率", options.resolution], ["比例", options.ratio], ["时长", options.duration] ] as const).filter(([, values]) => !values.length).map(([label]) => label).join("、") : "";
+    return <>
+        <CanvasSettingGroup title="分辨率" color={theme.node.muted}><div className="grid grid-cols-4 gap-2">{["", ...(options?.resolution || [])].map((value) => <OptionPill key={value} selected={resolution === value} theme={theme} onClick={() => onChange?.({ wanxResolution: value })}>{value || "网页当前"}</OptionPill>)}</div></CanvasSettingGroup>
+        <CanvasSettingGroup title="画面比例" color={theme.node.muted}><div className="grid grid-cols-4 gap-2">{["", ...(options?.ratio || [])].map((value) => <OptionPill key={value} selected={ratio === value} theme={theme} onClick={() => onChange?.({ wanxRatio: value })}>{value === "adaptive" ? "自动" : value || "网页当前"}</OptionPill>)}</div></CanvasSettingGroup>
+        <CanvasSettingGroup title="时长" color={theme.node.muted}><div className="flex flex-wrap items-center gap-2"><OptionPill selected={!duration} theme={theme} onClick={() => onChange?.({ wanxDuration: "" })}>网页当前</OptionPill>{options?.duration.includes("-1") ? <OptionPill selected={duration === "-1"} theme={theme} onClick={() => onChange?.({ wanxDuration: "-1" })}>智能</OptionPill> : null}{seconds.length && consecutive ? <><NumberField value={duration === "-1" ? "" : duration} min={seconds[0]} max={seconds[seconds.length - 1]} theme={theme} onChange={(value) => onChange?.({ wanxDuration: value })} /><span className="text-sm">{seconds[0]}–{seconds[seconds.length - 1]} 秒</span></> : seconds.map((value) => <OptionPill key={value} selected={duration === String(value)} theme={theme} onClick={() => onChange?.({ wanxDuration: String(value) })}>{value} 秒</OptionPill>)}</div></CanvasSettingGroup>
+        <p className="text-xs leading-5" style={{ color: theme.node.muted }}>{error || `仅显示万相网页当前模式的可选项；切换网页模式后重新打开此设置。${missing ? `未读到${missing}，该项保持网页当前。` : ""}`}{unavailable ? " 已保存的设置目前未核验，生成前会再次检查。" : ""}</p>
+    </>;
 }
 
 function CharacterOrientationSetting({ value, theme, onChange }: { value?: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onChange: (value: string) => void }) {
