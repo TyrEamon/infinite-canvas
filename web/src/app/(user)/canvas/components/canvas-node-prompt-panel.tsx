@@ -7,7 +7,8 @@ import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { ModelPicker } from "@/components/model-picker";
 import { useAutoDLWorkflow } from "@/hooks/use-autodl-workflow";
 import { getAutoDLCapabilities, isAutoDLConfig } from "@/lib/autodl";
-import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { isDashScopeWanVideoModel } from "@/lib/dashscope-video";
+import { channelProtocolForConfig, defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -34,7 +35,7 @@ type CanvasNodePromptPanelProps = {
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
     onCodexGenerate?: (nodeId: string, prompt: string, optimizePrompt: boolean) => void;
     onWanxGenerate?: (nodeId: string, prompt: string) => void;
-    onWanxOptimize?: (nodeId: string, prompt: string, source: "api" | "codex") => Promise<void>;
+    onVideoOptimize?: (nodeId: string, prompt: string, source: "api" | "codex") => Promise<void>;
     onStop: (nodeId: string) => void;
     mentionReferences?: CanvasResourceReference[];
     connectedNodes?: CanvasNodeData[];
@@ -45,7 +46,7 @@ type CanvasNodePromptPanelProps = {
     onImageSettingsOpenChange?: (open: boolean) => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onCodexGenerate, onWanxGenerate, onWanxOptimize, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onCodexGenerate, onWanxGenerate, onVideoOptimize, onStop, mentionReferences = [], connectedNodes = [], videoFrameOptions = [], videoResourceOptions = [], onDisconnectReference, onStartReferenceSelection, onImageSettingsOpenChange }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -54,6 +55,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const config = buildNodeConfig(globalConfig, node, mode);
     const codexImageGenSelected = Boolean(node.type === CanvasNodeType.Image && node.metadata?.codexImageGen && onCodexGenerate);
     const wanxVideoSelected = Boolean(node.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel && onWanxGenerate);
+    const dashScopeVideoSelected = node.type === CanvasNodeType.Video && isDashScopeWanVideoModel(channelProtocolForConfig(config), config.model);
     const { data: autodlWorkflow } = useAutoDLWorkflow(config, mode === "video" ? config.model : "");
     const isPanorama = isPanoramaNodeType(node.type);
     const mediaLoading = (isCanvasImageNodeType(node.type) || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.status === "loading";
@@ -99,11 +101,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         onGenerate(node.id, mode, text);
     };
 
-    const optimizeWanxPrompt = async (source: "api" | "codex") => {
-        if (!onWanxOptimize || optimizingPrompt || generating || !prompt.trim()) return;
+    const optimizeVideoPrompt = async (source: "api" | "codex") => {
+        if (!onVideoOptimize || optimizingPrompt || generating || !prompt.trim()) return;
         setOptimizingPrompt(true);
         try {
-            await onWanxOptimize(node.id, prompt.trim(), source);
+            await onVideoOptimize(node.id, prompt.trim(), source);
         } finally {
             setOptimizingPrompt(false);
         }
@@ -160,11 +162,11 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : mode === "video" ? (
                         <>
                             <ModelPicker className="!w-[180px] !min-w-0 !shrink-0" config={config} value={config.model} channelId={config.videoChannelId} workflowRef={node.metadata?.workflowRef} onWorkflowChange={(workflowRef) => onConfigChange(node.id, { workflowRef, wanxVideoModel: false })} onChange={(model, channelId) => onConfigChange(node.id, { model, channelId, wanxVideoModel: false })} capability="video" onMissingConfig={() => openConfigDialog(true)} includeWanxVideo={node.type === CanvasNodeType.Video && Boolean(onWanxGenerate)} wanxVideoSelected={wanxVideoSelected} onWanxVideoSelect={(selected) => onConfigChange(node.id, { wanxVideoModel: selected, ...(selected ? { workflowRef: undefined } : {}) })} />
-                            {wanxVideoSelected && onWanxOptimize ? (
+                            {(wanxVideoSelected || dashScopeVideoSelected) && onVideoOptimize ? (
                                 <Dropdown trigger={["click"]} placement="topLeft" disabled={generating || isStopping || optimizingPrompt || !prompt.trim()} menu={{ items: [
                                     { key: "api", label: <span className="block max-w-52 truncate" title={globalConfig.textModel || "未配置"}>当前文本模型 · {globalConfig.textModel || "未配置"}</span> },
                                     { key: "codex", label: "本地 Codex" },
-                                ], onClick: ({ key }) => void optimizeWanxPrompt(key === "codex" ? "codex" : "api") }}>
+                                ], onClick: ({ key }) => void optimizeVideoPrompt(key === "codex" ? "codex" : "api") }}>
                                     <Button type="text" className="!h-10 !shrink-0" disabled={generating || isStopping || !prompt.trim()} loading={optimizingPrompt} icon={<Sparkles className="size-3.5" />} style={{ color: theme.node.text }}>AI 优化</Button>
                                 </Dropdown>
                             ) : null}

@@ -33,6 +33,7 @@ import { applyCameraPrompt } from "../utils/canvas-camera";
 import { GROUP_PADDING, findContainingGroupId, findGroupDropTarget, getNodeBounds, snapNodesIntoGroup } from "../utils/canvas-group";
 import { App, Button, Dropdown, Input, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
+import { isDashScopeWanVideoModel } from "@/lib/dashscope-video";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
 import { isAutoDLConfig } from "@/lib/autodl";
 import { isGlmTtsModel } from "@/lib/audio-generation";
@@ -3128,7 +3129,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setNodes(nextNodes);
     }, []);
 
-    const [optimizedPrompt, setOptimizedPrompt] = useState<{ kind: "image" | "wanx-video"; nodeId: string; prompt: string; originalPrompt: string } | null>(null);
+    const [optimizedPrompt, setOptimizedPrompt] = useState<{ kind: "image" | "wanx-video" | "dashscope-video"; nodeId: string; prompt: string; originalPrompt: string } | null>(null);
     const startCodexImageGeneration = useCallback((nodeId: string, prompt: string, optimizeImagePrompt = false) => {
         const imageNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Image);
         if (!imageNode || !prompt.trim()) return;
@@ -3219,16 +3220,23 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         }
     }, [message]);
 
-    const optimizeWanxPrompt = useCallback(async (nodeId: string, prompt: string, source: "api" | "codex") => {
-        const videoNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel);
+    const optimizeVideoPrompt = useCallback(async (nodeId: string, prompt: string, source: "api" | "codex") => {
+        const videoNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Video);
         const originalPrompt = prompt.trim();
         if (!videoNode || !originalPrompt) return;
-        const settings = [
+        const webModel = Boolean(videoNode.metadata?.wanxVideoModel);
+        const videoConfig = buildGenerationConfig(effectiveConfig, videoNode, "video");
+        if (!webModel && !isDashScopeWanVideoModel(channelProtocolForConfig(videoConfig), videoConfig.model)) return;
+        const settings = webModel ? [
             videoNode.metadata?.wanxResolution && `分辨率 ${videoNode.metadata.wanxResolution}`,
             videoNode.metadata?.wanxRatio && `画面比例 ${videoNode.metadata.wanxRatio}`,
             videoNode.metadata?.wanxDuration && `时长 ${videoNode.metadata.wanxDuration === "-1" ? "智能" : `${videoNode.metadata.wanxDuration} 秒`}`,
-        ].filter(Boolean).join("；") || "沿用万相网页当前设置";
-        const request = `请优化以下通义万相视频生成提示词，只返回可编辑的完整优化稿正文。本轮只优化文本，不生成视频或修改画布。保留原文主体、角色数量、动作、场景、风格、镜头、台词和限制，不引入其他主题；让动作时序与镜头运动更清晰，不改动画布设置。\n\n视频设置：${settings}\n\n原提示词：\n${originalPrompt}`;
+        ].filter(Boolean).join("；") || "沿用万相网页当前设置" : [
+            `分辨率 ${videoConfig.vquality}P`,
+            `画面比例 ${videoConfig.size === "auto" ? "自动" : videoConfig.size}`,
+            `时长 ${videoConfig.videoSeconds === "-1" ? "智能" : `${videoConfig.videoSeconds} 秒`}`,
+        ].join("；");
+        const request = `请优化以下万相视频生成提示词，只返回可编辑的完整优化稿正文。本轮只优化文本，不生成视频或修改画布。保留原文主体、角色数量、动作、场景、风格、镜头、台词和限制，不引入其他主题；让动作时序与镜头运动更清晰，不改动画布设置。\n\n视频设置：${settings}\n\n原提示词：\n${originalPrompt}`;
         if (source === "codex") {
             setInitialAgentRequest({ prompt: request, originalPrompt, optimizePromptOnly: true, optimizePromptKind: "video", optimizationTargetNodeId: nodeId, references: [], skills: [] });
             handleAgentConfigChange({ mode: "codex" });
@@ -3246,26 +3254,17 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         try {
             const result = await requestCanvasAgentTurn({
                 config: requestConfig,
-                systemPrompt: "你只负责优化通义万相视频生成提示词，不调用工具，也不执行生成。只输出优化后的提示词纯文本，不加解释、前言或 Markdown；严格保留用户的主体、场景和限制，避免与视频设置冲突。",
+                systemPrompt: "你只负责优化万相视频生成提示词，不调用工具，也不执行生成。只输出优化后的提示词纯文本，不加解释、前言或 Markdown；严格保留用户的主体、场景和限制，避免与视频设置冲突。",
                 messages: [{ role: "user", content: request }],
                 tools: [],
                 toolMode: "prompt-json",
             });
             if (!result.content.trim()) throw new Error("文本模型未返回优化提示词，请重试");
-            setOptimizedPrompt({ kind: "wanx-video", nodeId, prompt: result.content.trim(), originalPrompt });
+            setOptimizedPrompt({ kind: webModel ? "wanx-video" : "dashscope-video", nodeId, prompt: result.content.trim(), originalPrompt });
         } catch (error) {
             message.error(error instanceof Error ? error.message : "视频提示词优化失败");
         }
     }, [effectiveConfig, handleAgentConfigChange, isAiConfigReady, message, openConfigDialog, resolvedAgentConfig.textApiMode, resolvedAgentConfig.textReasoningEnabled, resolvedAgentConfig.textStreaming]);
-
-    const generateReviewedPrompt = useCallback((useOriginal: boolean) => {
-        if (!optimizedPrompt) return;
-        const prompt = useOriginal ? optimizedPrompt.originalPrompt : optimizedPrompt.prompt.trim();
-        if (!prompt) return;
-        if (optimizedPrompt.kind === "image") startCodexImageGeneration(optimizedPrompt.nodeId, prompt);
-        else void startWanxVideoGeneration(optimizedPrompt.nodeId, prompt);
-        setOptimizedPrompt(null);
-    }, [optimizedPrompt, startCodexImageGeneration, startWanxVideoGeneration]);
 
     const startTitleEditing = useCallback(() => {
         setTitleDraft(currentProject?.title || "未命名画布");
@@ -3768,6 +3767,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         },
         [effectiveConfig, openConfigDialog, isNodeTaskActive, submitNodeTask],
     );
+
+    const generateReviewedPrompt = useCallback((useOriginal: boolean) => {
+        if (!optimizedPrompt) return;
+        const prompt = useOriginal ? optimizedPrompt.originalPrompt : optimizedPrompt.prompt.trim();
+        if (!prompt) return;
+        if (optimizedPrompt.kind === "image") startCodexImageGeneration(optimizedPrompt.nodeId, prompt);
+        else if (optimizedPrompt.kind === "wanx-video") void startWanxVideoGeneration(optimizedPrompt.nodeId, prompt);
+        else void handleGenerateNode(optimizedPrompt.nodeId, "video", prompt);
+        setOptimizedPrompt(null);
+    }, [handleGenerateNode, optimizedPrompt, startCodexImageGeneration, startWanxVideoGeneration]);
 
     const getCanvasAgentContext = useCallback(
         (agentState: CanvasAgentState) =>
@@ -4778,7 +4787,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         }}
                                         onCodexGenerate={startCodexImageGeneration}
                                         onWanxGenerate={startWanxVideoGeneration}
-                                        onWanxOptimize={optimizeWanxPrompt}
+                                        onVideoOptimize={optimizeVideoPrompt}
                                         onStop={handleStopNode}
                                         onDisconnectReference={disconnectNodeReference}
                                         onStartReferenceSelection={startNodeReferenceSelection}
@@ -5202,7 +5211,11 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onCodexPromptOptimized={(nodeId, prompt, originalPrompt) => {
                         const node = nodesRef.current.find((item) => item.id === nodeId);
                         if (node?.type === CanvasNodeType.Image) setOptimizedPrompt({ kind: "image", nodeId, prompt, originalPrompt });
-                        else if (node?.type === CanvasNodeType.Video && node.metadata?.wanxVideoModel) setOptimizedPrompt({ kind: "wanx-video", nodeId, prompt, originalPrompt });
+                        else if (node?.type === CanvasNodeType.Video) {
+                            const webModel = Boolean(node.metadata?.wanxVideoModel);
+                            const videoConfig = buildGenerationConfig(effectiveConfig, node, "video");
+                            if (webModel || isDashScopeWanVideoModel(channelProtocolForConfig(videoConfig), videoConfig.model)) setOptimizedPrompt({ kind: webModel ? "wanx-video" : "dashscope-video", nodeId, prompt, originalPrompt });
+                        }
                     }}
                     onCodexImageGenerationState={setCodexImageGenerationState}
                     onCollapseStart={() =>
