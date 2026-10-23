@@ -53,10 +53,13 @@ export type CanvasNodeMetadata = {
     workflowRef?: import("@/lib/workflow-channel").WorkflowRef;
     channelId?: string;
     size?: string;
+    sizeEdited?: boolean;
     quality?: string;
     count?: number;
     seconds?: string;
+    secondsEdited?: boolean;
     vquality?: string;
+    vqualityEdited?: boolean;
     mode?: string;
     negativePrompt?: string;
     generateAudio?: string;

@@ -915,10 +915,40 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const createConnectedNode = useCallback(
         (type: CanvasNodeType, pending: PendingConnectionCreate) => {
             const workflowRef = isCanvasImageNodeType(type) ? effectiveConfig.imageWorkflowRef : type === CanvasNodeType.Video ? effectiveConfig.videoWorkflowRef : type === CanvasNodeType.Audio ? effectiveConfig.audioWorkflowRef : undefined;
-            const metadata = type === CanvasNodeType.Config
-                ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count), workflowRef: effectiveConfig.imageWorkflowRef }
+            const savedSettings = useConfigStore.getState();
+            const sourceImage = pending.connection.handleType === "source" ? nodesRef.current.find((node) => node.id === pending.connection.nodeId && node.type === CanvasNodeType.Image) : undefined;
+            const sourceImageSettings = sourceImage?.metadata && (sourceImage.metadata.generationType || !sourceImage.metadata.content || sourceImage.metadata.model || sourceImage.metadata.size || sourceImage.metadata.quality || sourceImage.metadata.count) ? sourceImage.metadata : undefined;
+            const imageModel = sourceImageSettings?.model || effectiveConfig.imageModel || effectiveConfig.model;
+            const imageChannelId = sourceImageSettings?.channelId || effectiveConfig.imageChannelId;
+            const codexImageGen = Boolean(sourceImageSettings?.codexImageGen);
+            const imageSize = sourceImageSettings?.size || savedSettings.lastCanvasImageSizes[canvasModelSettingsKey(codexImageGen ? "" : imageChannelId, codexImageGen ? CODEX_IMAGE_MODEL : imageModel)] || "auto";
+            const imageSettings: CanvasNodeMetadata = {
+                model: imageModel,
+                channelId: imageChannelId,
+                workflowRef: codexImageGen ? undefined : sourceImageSettings?.workflowRef || effectiveConfig.imageWorkflowRef,
+                size: imageSize,
+                quality: sourceImageSettings?.quality || effectiveConfig.quality,
+                count: getGenerationCount(String(sourceImageSettings?.count || effectiveConfig.canvasImageCount || effectiveConfig.count)),
+            };
+            const sourceVideo = pending.connection.handleType === "source" ? nodesRef.current.find((node) => node.id === pending.connection.nodeId && node.type === CanvasNodeType.Video) : undefined;
+            const videoModel = sourceVideo?.metadata?.model || effectiveConfig.videoModel;
+            const videoChannelId = sourceVideo?.metadata?.channelId || effectiveConfig.videoChannelId;
+            const videoSettings = savedSettings.lastCanvasVideoSettings[canvasModelSettingsKey(videoChannelId, videoModel)];
+            const metadata: CanvasNodeMetadata | undefined = type === CanvasNodeType.Config
+                ? imageSettings
+                : type === CanvasNodeType.Image ? { ...imageSettings, ...(codexImageGen ? { codexImageGen: true } : {}) }
+                : type === CanvasNodeType.Video ? {
+                    workflowRef: sourceVideo?.metadata?.workflowRef || workflowRef,
+                    model: videoModel,
+                    channelId: videoChannelId,
+                    size: sourceVideo?.metadata?.size || videoSettings?.size || effectiveConfig.videoSize,
+                    vquality: sourceVideo?.metadata?.vquality || videoSettings?.vquality || effectiveConfig.vquality,
+                    seconds: sourceVideo?.metadata?.seconds || videoSettings?.seconds || effectiveConfig.videoSeconds,
+                    ...(sourceVideo?.metadata?.wanxVideoModel ? { wanxVideoModel: true, wanxResolution: sourceVideo.metadata?.wanxResolution, wanxRatio: sourceVideo.metadata?.wanxRatio, wanxDuration: sourceVideo.metadata?.wanxDuration } : {}),
+                }
                 : workflowRef ? { workflowRef } : undefined;
-            const newNode = createCanvasNode(type, pending.position, metadata);
+            let newNode = createCanvasNode(type, pending.position, metadata);
+            if ((type === CanvasNodeType.Image || type === CanvasNodeType.Video) && metadata?.size) newNode = applyNodeConfigPatch(newNode, { size: metadata.size });
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
             if (!connection) {
                 message.warning("配置节点之间不能连接");
@@ -932,7 +962,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             setPendingConnectionCreate(null);
             setConnecting(null);
         },
-        [effectiveConfig.audioWorkflowRef, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.imageWorkflowRef, effectiveConfig.model, effectiveConfig.size, effectiveConfig.videoWorkflowRef, message, setConnecting],
+        [effectiveConfig.audioWorkflowRef, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageChannelId, effectiveConfig.imageModel, effectiveConfig.imageWorkflowRef, effectiveConfig.model, effectiveConfig.quality, effectiveConfig.videoChannelId, effectiveConfig.videoModel, effectiveConfig.videoSeconds, effectiveConfig.videoSize, effectiveConfig.videoWorkflowRef, effectiveConfig.vquality, message, setConnecting],
     );
 
     const cancelPendingConnectionCreate = useCallback(() => {
@@ -2372,17 +2402,32 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         setNodes((prev) => prev.map((node) => {
             if (node.id !== nodeId) return node;
             const mode = node.type === CanvasNodeType.Config ? patch.generationMode || node.metadata?.generationMode || "image" : node.type === CanvasNodeType.Video ? "video" : isCanvasImageNodeType(node.type) ? "image" : "text";
-            let nextPatch = patch;
+            const modeChanged = Boolean(patch.generationMode && patch.generationMode !== node.metadata?.generationMode);
+            let nextPatch = {
+                ...patch,
+                ...(modeChanged ? { sizeEdited: false, vqualityEdited: false, secondsEdited: false } : {}),
+                ...(!patch.model && !patch.channelId && !patch.generationMode && patch.size !== undefined ? { sizeEdited: true } : {}),
+                ...(!patch.model && !patch.channelId && !patch.generationMode && patch.vquality !== undefined ? { vqualityEdited: true } : {}),
+                ...(!patch.model && !patch.channelId && !patch.generationMode && patch.seconds !== undefined ? { secondsEdited: true } : {}),
+            };
+            const sizeEdited = nextPatch.sizeEdited ?? node.metadata?.sizeEdited;
+            const vqualityEdited = nextPatch.vqualityEdited ?? node.metadata?.vqualityEdited;
+            const secondsEdited = nextPatch.secondsEdited ?? node.metadata?.secondsEdited;
             if ((patch.model || patch.channelId || patch.generationMode || patch.codexImageGen !== undefined) && mode === "image" && !isPanoramaNodeType(node.type)) {
                 const codexSelected = patch.codexImageGen ?? node.metadata?.codexImageGen;
                 const model = codexSelected ? CODEX_IMAGE_MODEL : patch.model || node.metadata?.model || effectiveConfig.imageModel;
                 const channelId = codexSelected ? "" : patch.channelId || node.metadata?.channelId || effectiveConfig.imageChannelId;
-                nextPatch = { ...patch, size: useConfigStore.getState().lastCanvasImageSizes[canvasModelSettingsKey(channelId, model)] || "auto" };
+                if (!sizeEdited) nextPatch = { ...nextPatch, size: useConfigStore.getState().lastCanvasImageSizes[canvasModelSettingsKey(channelId, model)] || "auto" };
             } else if ((patch.model || patch.channelId || patch.generationMode) && mode === "video") {
                 const model = patch.model || node.metadata?.model || effectiveConfig.videoModel;
                 const channelId = patch.channelId || node.metadata?.channelId || effectiveConfig.videoChannelId;
                 const settings = useConfigStore.getState().lastCanvasVideoSettings[canvasModelSettingsKey(channelId, model)];
-                nextPatch = { ...patch, size: settings?.size || effectiveConfig.videoSize, vquality: settings?.vquality || effectiveConfig.vquality, seconds: settings?.seconds || effectiveConfig.videoSeconds };
+                nextPatch = {
+                    ...nextPatch,
+                    ...(!sizeEdited ? { size: settings?.size || effectiveConfig.videoSize } : {}),
+                    ...(!vqualityEdited ? { vquality: settings?.vquality || effectiveConfig.vquality } : {}),
+                    ...(!secondsEdited ? { seconds: settings?.seconds || effectiveConfig.videoSeconds } : {}),
+                };
             }
             return applyNodeConfigPatch(node, nextPatch);
         }));
@@ -4508,7 +4553,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 title: imagePrompt.slice(0, 32),
                 width: nodeSize.width,
                 height: nodeSize.height,
-                metadata: { ...node.metadata, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation", status: undefined, startedAt: undefined, progress: undefined, errorDetails: undefined },
+                metadata: { ...node.metadata, ...imageMetadata(image), codexImageGen: true, prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation", status: undefined, startedAt: undefined, progress: undefined, errorDetails: undefined },
             } : node);
             nodesRef.current = nextNodes;
             setNodes(nextNodes);
@@ -4548,7 +4593,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             position: { x: center.x - nodeSize.width / 2, y: center.y - nodeSize.height / 2 },
             width: nodeSize.width,
             height: nodeSize.height,
-            metadata: { ...imageSettings, ...imageMetadata(image), prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
+            metadata: { ...imageSettings, ...imageMetadata(image), codexImageGen: true, prompt: imagePrompt, generationType: sourceNodes.some((item) => isCanvasImageNodeType(item.type)) ? "edit" : "generation" },
         };
         const nextNodes = [...nodesRef.current, node];
         const nextConnections = [
