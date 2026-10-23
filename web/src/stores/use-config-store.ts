@@ -106,6 +106,11 @@ export type AiConfig = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ModelCapabilities = Partial<Record<string, ModelCapability>>;
+export type CanvasVideoSettings = { size: string; vquality: string; seconds: string };
+
+export function canvasModelSettingsKey(channelId: string, model: string) {
+    return JSON.stringify([channelId, model]);
+}
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -149,7 +154,7 @@ export const defaultConfig: AiConfig = {
     textModels: [],
     audioModels: [],
     quality: "auto",
-    size: "1:1",
+    size: "auto",
     videoSize: "1280x720",
     count: "1",
     canvasImageCount: "1",
@@ -179,11 +184,15 @@ export const defaultConfig: AiConfig = {
 
 type ConfigStore = {
     config: AiConfig;
+    lastCanvasImageSizes: Record<string, string>;
+    lastCanvasVideoSettings: Record<string, CanvasVideoSettings>;
     publicSettings: AdminPublicSettings | null;
     isPublicSettingsLoading: boolean;
     isConfigOpen: boolean;
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
+    rememberCanvasImageSize: (channelId: string, model: string, size: string) => void;
+    rememberCanvasVideoSettings: (channelId: string, model: string, settings: CanvasVideoSettings) => void;
     loadPublicSettings: () => Promise<void>;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean) => void;
@@ -389,6 +398,8 @@ export const useConfigStore = create<ConfigStore>()(
         (set, get) => ({
             config: defaultConfig,
             publicSettings: null,
+            lastCanvasImageSizes: {},
+            lastCanvasVideoSettings: {},
             isPublicSettingsLoading: false,
             isConfigOpen: false,
             shouldPromptContinue: false,
@@ -399,6 +410,12 @@ export const useConfigStore = create<ConfigStore>()(
                         [key]: value,
                     },
                 })),
+            rememberCanvasImageSize: (channelId, model, size) => set((state) => ({
+                lastCanvasImageSizes: { ...state.lastCanvasImageSizes, [canvasModelSettingsKey(channelId, model)]: size },
+            })),
+            rememberCanvasVideoSettings: (channelId, model, settings) => set((state) => ({
+                lastCanvasVideoSettings: { ...state.lastCanvasVideoSettings, [canvasModelSettingsKey(channelId, model)]: settings },
+            })),
             loadPublicSettings: async () => {
                 if (get().isPublicSettingsLoading) return;
                 set({ isPublicSettingsLoading: true });
@@ -415,7 +432,7 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config }),
+            partialize: (state) => ({ config: state.config, lastCanvasImageSizes: state.lastCanvasImageSizes, lastCanvasVideoSettings: state.lastCanvasVideoSettings }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
@@ -425,6 +442,8 @@ export const useConfigStore = create<ConfigStore>()(
                 const localModels = normalizeModelList(modelChannels.flatMap((channel) => channel.models));
                 return {
                     ...current,
+                    lastCanvasImageSizes: persistedState.lastCanvasImageSizes || {},
+                    lastCanvasVideoSettings: persistedState.lastCanvasVideoSettings || {},
                     config: {
                         ...config,
                         localChannels,

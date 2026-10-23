@@ -14,7 +14,7 @@ import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_IN
 import { requestCanvasAgentTurn } from "@/services/api/canvas-agent";
 import { comfyOutputStorageKey, getWorkflowTask, submitWorkflowTask, workflowMediaSource, type WorkflowGenerationTask } from "@/services/api/workflow-generation";
 import type { WorkflowRef } from "@/lib/workflow-channel";
-import { channelProtocolForConfig, defaultConfig, resolveModelForCapability, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { canvasModelSettingsKey, channelProtocolForConfig, defaultConfig, resolveModelForCapability, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { collectImageStorageKeys, deleteStoredImages, resolveImageUrl, uploadImage, uploadRemoteImageToServer, type UploadedImage } from "@/services/image-storage";
 import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer, type UploadedFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -132,6 +132,7 @@ const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
 const WANX_WEB_VIDEO_MODEL = "__wanx_web_video__";
+const CODEX_IMAGE_MODEL = "__codex_imagegen__";
 const AGENT_PRIMARY_SCRIPT_NODE_SIZE = { width: 550, height: 600 };
 const VIDEO_PREVIEW_CONTROL_CLASS = "flex size-9 items-center justify-center rounded-lg text-white transition-colors hover:bg-white/10";
 const IMAGE_PROMPT_REVERSE_PRESET = `请根据参考图片反推一段适合用于 AI 生图的提示词。
@@ -1188,16 +1189,21 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         (type: CanvasNodeType, position?: Position, textContent?: string, nodeId?: string) => {
             const targetPosition = position || getCanvasCenter();
             const workflowRef = isCanvasImageNodeType(type) ? effectiveConfig.imageWorkflowRef : type === CanvasNodeType.Video ? effectiveConfig.videoWorkflowRef : type === CanvasNodeType.Audio ? effectiveConfig.audioWorkflowRef : undefined;
-            const configMetadata =
+            const savedSettings = useConfigStore.getState();
+            const imageSize = savedSettings.lastCanvasImageSizes[canvasModelSettingsKey(effectiveConfig.imageChannelId, effectiveConfig.imageModel)] || "auto";
+            const videoSettings = savedSettings.lastCanvasVideoSettings[canvasModelSettingsKey(effectiveConfig.videoChannelId, effectiveConfig.videoModel)];
+            const configMetadata: CanvasNodeMetadata | undefined =
                 type === CanvasNodeType.Config
                     ? {
                         model: effectiveConfig.imageModel || effectiveConfig.model,
-                        size: effectiveConfig.size,
+                        size: imageSize,
                         count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                         workflowRef: effectiveConfig.imageWorkflowRef,
                     }
+                    : type === CanvasNodeType.Image ? { workflowRef, size: imageSize }
+                    : type === CanvasNodeType.Video ? { workflowRef, ...(videoSettings || {}) }
                     : workflowRef ? { workflowRef } : undefined;
-            const newNode = createCanvasNode(
+            let newNode = createCanvasNode(
                 type,
                 targetPosition,
                 type === CanvasNodeType.Text && textContent !== undefined
@@ -1205,13 +1211,14 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     : configMetadata,
                 nodeId,
             );
+            if ((type === CanvasNodeType.Image || type === CanvasNodeType.Video) && configMetadata?.size) newNode = applyNodeConfigPatch(newNode, { size: configMetadata.size });
             if (type === CanvasNodeType.Text && textContent !== undefined) newNode.title = textContent.slice(0, 32) || "Assistant Text";
             setNodes((prev) => [...prev, newNode]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
             if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Director) setDialogNodeId(newNode.id);
         },
-        [effectiveConfig.audioWorkflowRef, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.imageWorkflowRef, effectiveConfig.model, effectiveConfig.size, effectiveConfig.videoWorkflowRef, getCanvasCenter],
+        [effectiveConfig.audioWorkflowRef, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageChannelId, effectiveConfig.imageModel, effectiveConfig.imageWorkflowRef, effectiveConfig.model, effectiveConfig.videoChannelId, effectiveConfig.videoModel, effectiveConfig.videoWorkflowRef, getCanvasCenter],
     );
 
     const deleteNodes = useCallback(
@@ -2362,8 +2369,24 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     }, []);
 
     const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
-    }, []);
+        setNodes((prev) => prev.map((node) => {
+            if (node.id !== nodeId) return node;
+            const mode = node.type === CanvasNodeType.Config ? patch.generationMode || node.metadata?.generationMode || "image" : node.type === CanvasNodeType.Video ? "video" : isCanvasImageNodeType(node.type) ? "image" : "text";
+            let nextPatch = patch;
+            if ((patch.model || patch.channelId || patch.generationMode || patch.codexImageGen !== undefined) && mode === "image" && !isPanoramaNodeType(node.type)) {
+                const codexSelected = patch.codexImageGen ?? node.metadata?.codexImageGen;
+                const model = codexSelected ? CODEX_IMAGE_MODEL : patch.model || node.metadata?.model || effectiveConfig.imageModel;
+                const channelId = codexSelected ? "" : patch.channelId || node.metadata?.channelId || effectiveConfig.imageChannelId;
+                nextPatch = { ...patch, size: useConfigStore.getState().lastCanvasImageSizes[canvasModelSettingsKey(channelId, model)] || "auto" };
+            } else if ((patch.model || patch.channelId || patch.generationMode) && mode === "video") {
+                const model = patch.model || node.metadata?.model || effectiveConfig.videoModel;
+                const channelId = patch.channelId || node.metadata?.channelId || effectiveConfig.videoChannelId;
+                const settings = useConfigStore.getState().lastCanvasVideoSettings[canvasModelSettingsKey(channelId, model)];
+                nextPatch = { ...patch, size: settings?.size || effectiveConfig.videoSize, vquality: settings?.vquality || effectiveConfig.vquality, seconds: settings?.seconds || effectiveConfig.videoSeconds };
+            }
+            return applyNodeConfigPatch(node, nextPatch);
+        }));
+    }, [effectiveConfig.imageChannelId, effectiveConfig.imageModel, effectiveConfig.videoChannelId, effectiveConfig.videoModel, effectiveConfig.videoSeconds, effectiveConfig.videoSize, effectiveConfig.vquality]);
 
     const handleDirectorProjectChange = useCallback(
         (project: unknown) => {
@@ -3143,7 +3166,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         const ownContent = assistantReferenceContentFromNode(imageNode);
         const hasCurrentImage = Boolean(ownContent?.dataUrl || ownContent?.url);
         if (hasCurrentImage && ownContent) references.push({ id: imageNode.id, type: imageNode.type, title: imageNode.title, label: "当前迭代图片", ...ownContent });
-        const imageSettingsPrompt = buildCodexImageSettingsPrompt(buildGenerationConfig(effectiveConfig, imageNode, "image"));
+        const imageConfig = buildGenerationConfig(effectiveConfig, imageNode, "image");
+        const imageSettingsPrompt = buildCodexImageSettingsPrompt(imageConfig);
+        if (!optimizeImagePrompt) useConfigStore.getState().rememberCanvasImageSize("", CODEX_IMAGE_MODEL, imageConfig.size);
         const promptRule = "将原文作为完整提示词直接生图；不要自行翻译、优化、扩写或改变主体、服装、场景、构图和约束。";
         const requestPrompt = hasCurrentImage
             ? `请使用 Codex 内置 ImageGen，根据本次提示词迭代画布图片节点「${imageNode.title}」。\n\n本次迭代提示词：\n${prompt.trim()}\n\n${promptRule}\n\n${imageSettingsPrompt}\n\n本轮附图包含上游连接的图片素材；最后一张是当前节点原图，请以它为主要编辑对象。生成后由系统自动保存为新的画布图片节点并连接全部来源，保留原图。不要调用画布的 generate_image 或 edit_image 工具。`
@@ -3162,7 +3187,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         handleAgentConfigChange({ mode: "codex" });
         setAssistantMounted(true);
         setAgentPanel((current) => ({ ...current, open: true }));
-    }, [handleAgentConfigChange]);
+    }, [effectiveConfig, handleAgentConfigChange]);
 
     const startWanxVideoGeneration = useCallback(async (nodeId: string, prompt: string) => {
         const sourceNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Video);
@@ -3479,6 +3504,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 }
 
                 if (mode === "image") {
+                    useConfigStore.getState().rememberCanvasImageSize(generationConfig.imageChannelId, generationConfig.model, generationConfig.size);
                     const count = !workflowRef && isKIESeedreamLayerDecompositionModel(generationConfig.model) ? 1 : getGenerationCount(generationConfig.count);
                     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
                     const isImageNode = sourceNode?.type === CanvasNodeType.Image;
@@ -3648,6 +3674,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
                 if (mode === "video") {
                     const videoGenerationConfig = workflowRef ? generationConfig : withCanvasVideoAdvancedConfig(generationConfig, generationContext);
+                    useConfigStore.getState().rememberCanvasVideoSettings(videoGenerationConfig.videoChannelId, videoGenerationConfig.model, { size: videoGenerationConfig.size, vquality: videoGenerationConfig.vquality, seconds: videoGenerationConfig.videoSeconds });
                     const frameReferencesEnabled = Boolean(workflowRef) || supportsVideoFrameReferences(videoGenerationConfig.model, channelProtocolForConfig(videoGenerationConfig));
                     const firstFrame = frameReferencesEnabled ? generationContext.firstFrame : null;
                     const lastFrame = frameReferencesEnabled ? generationContext.lastFrame : null;
