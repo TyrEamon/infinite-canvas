@@ -31,6 +31,7 @@ export function CanvasNodeContextMenu({ menu, canCaptureVideoFrame, onClose, onC
             {canCaptureVideoFrame ? (
                 <>
                     <MenuButton icon={<BetweenHorizontalStart className="size-4" />} label="截取首帧" onClick={() => onCaptureVideoFrame("first")} />
+                    <MenuButton icon={<GalleryHorizontal className="size-4" />} label="截取中间帧" onClick={() => onCaptureVideoFrame("middle")} />
                     <MenuButton icon={<GalleryHorizontalEnd className="size-4" />} label="截取尾帧" onClick={() => onCaptureVideoFrame("last")} />
                     <MenuButton icon={<GalleryHorizontal className="size-4" />} label="截取当前帧" onClick={() => onCaptureVideoFrame("current")} />
                     <div className="my-1 border-t" style={{ borderColor: theme.toolbar.border }} />

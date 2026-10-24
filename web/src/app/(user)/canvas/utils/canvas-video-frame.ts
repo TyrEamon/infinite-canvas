@@ -3,7 +3,7 @@
 import { downloadRemoteMedia } from "@/services/file-storage";
 import { getProxyUrl } from "@/services/image-storage";
 
-export type VideoFramePosition = "first" | "last" | "current";
+export type VideoFramePosition = "first" | "middle" | "last" | "current";
 
 export async function captureVideoFrame(source: string, position: VideoFramePosition, currentTime: number) {
     try {
@@ -33,7 +33,7 @@ async function captureFrameDirect(source: string, position: VideoFramePosition, 
 
         await metadataLoaded;
         const endTime = Math.max(0, video.duration - 0.001);
-        const time = position === "first" ? 0 : position === "last" ? endTime : Math.min(currentTime, endTime);
+        const time = position === "first" ? 0 : position === "middle" ? endTime / 2 : position === "last" ? endTime : Math.min(currentTime, endTime);
         if (time) {
             const seeked = waitForVideo(video, "seeked");
             video.currentTime = time;

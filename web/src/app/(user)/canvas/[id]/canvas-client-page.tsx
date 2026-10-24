@@ -11,14 +11,14 @@ import { deleteCanvasProjects, stopCanvasTask } from "@/services/api/canvas-task
 import { createCanvasImageTask, pollCanvasImageTaskStatus, requestImageQuestion, type CanvasImageTask } from "@/services/api/image";
 import { createCanvasAudioTask, pollCanvasAudioTaskStatus, type CanvasAudioTask } from "@/services/api/audio";
 import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, type VideoResponse } from "@/services/api/video";
-import { requestCanvasAgentTurn } from "@/services/api/canvas-agent";
+import { requestCanvasAgentTurn, requestCanvasNodeChat } from "@/services/api/canvas-agent";
 import { comfyOutputStorageKey, getWorkflowTask, submitWorkflowTask, workflowMediaSource, type WorkflowGenerationTask } from "@/services/api/workflow-generation";
 import type { WorkflowRef } from "@/lib/workflow-channel";
 import { canvasModelSettingsKey, channelProtocolForConfig, defaultConfig, resolveModelForCapability, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { collectImageStorageKeys, deleteStoredImages, resolveImageUrl, uploadImage, uploadRemoteImageToServer, type UploadedImage } from "@/services/image-storage";
+import { collectImageStorageKeys, deleteStoredImages, imageToDataUrl, resolveImageUrl, uploadImage, uploadRemoteImageToServer, type UploadedImage } from "@/services/image-storage";
 import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer, type UploadedFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
-import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
+import { getDataUrlByteSize, readImageMeta, shrinkImageToBudget } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
@@ -48,6 +48,7 @@ import { CanvasConfigNodePanel } from "../components/canvas-config-node-panel";
 import { CanvasDirector } from "../components/canvas-director";
 import { CanvasDirectorNodePanel } from "../components/canvas-director-node-panel";
 import { CanvasAssistantPanel } from "../components/canvas-assistant-panel";
+import { CanvasAgentChatNode } from "../components/canvas-agent-chat-node";
 import { CanvasNodeContextMenu } from "../components/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "../components/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "../components/canvas-node-crop-dialog";
@@ -82,6 +83,9 @@ import {
     type CanvasDirectorVideo,
     type CanvasImageGenerationType,
     type CanvasNodeData,
+    type CanvasNodeChat,
+    type CanvasNodeChatReference,
+    type CanvasAgentProtocolMessage,
     type CanvasNodeMetadata,
     type CanvasPendingAgentRequest,
     type ConnectionHandle,
@@ -217,7 +221,7 @@ function CanvasRefreshShell() {
     );
 }
 
-function ConnectionCreateMenu({ pending, onCreate, onClose }: { pending: PendingConnectionCreate; onCreate: (type: CanvasNodeType) => void; onClose: () => void }) {
+function ConnectionCreateMenu({ pending, canCreateAgent, onCreate, onClose }: { pending: PendingConnectionCreate; canCreateAgent: boolean; onCreate: (type: CanvasNodeType) => void; onClose: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div
@@ -243,6 +247,7 @@ function ConnectionCreateMenu({ pending, onCreate, onClose }: { pending: Pending
                 <ConnectionCreateOption theme={theme} icon={<Globe2 className="size-5" />} title="全景图" description="文生全景、图生全景" onClick={() => onCreate(CanvasNodeType.Panorama)} />
                 <ConnectionCreateOption theme={theme} icon={<Layers3 className="size-5" />} title="3D 导演台" description="3D场景、角色、机位" onClick={() => onCreate(CanvasNodeType.Director)} />
                 <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title="配置节点" description="模型、尺寸、数量和输入顺序" onClick={() => onCreate(CanvasNodeType.Config)} />
+                {canCreateAgent ? <ConnectionCreateOption theme={theme} icon={<Bot className="size-5" />} title="Agent 聊天" description="连接图片或文本，独立讨论" onClick={() => onCreate(CanvasNodeType.Agent)} /> : null}
             </div>
         </div>
     );
@@ -300,6 +305,7 @@ function NodeCreateMenu({
                 <ConnectionCreateOption theme={theme} icon={<Globe2 className="size-5" />} title="全景图" description="文生全景、图生全景" onClick={() => onCreate(CanvasNodeType.Panorama)} />
                 <ConnectionCreateOption theme={theme} icon={<Layers3 className="size-5" />} title="3D 导演台" description="3D场景、角色、机位" onClick={() => onCreate(CanvasNodeType.Director)} />
                 <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title="配置节点" description="模型、尺寸、数量和输入顺序" onClick={() => onCreate(CanvasNodeType.Config)} />
+                <ConnectionCreateOption theme={theme} icon={<Bot className="size-5" />} title="Agent 聊天" description="连接图片或文本，独立讨论" onClick={() => onCreate(CanvasNodeType.Agent)} />
                 <div className="mb-2 mt-3 flex items-center justify-between px-1">
                     <span className="text-sm font-medium" style={{ color: theme.node.muted }}>添加资源</span>
                 </div>
@@ -368,6 +374,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
+    const [agentNodeChats, setAgentNodeChats] = useState<Record<string, CanvasNodeChat>>({});
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig | null>(null);
     const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; imagePrompt?: string; originalPrompt?: string; optimizePromptOnly?: boolean; optimizePromptKind?: "image" | "video"; optimizationTargetNodeId?: string; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"]; imageTargetNodeId?: string } | null>(null);
@@ -447,6 +454,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     );
 
     const nodesRef = useRef(nodes);
+    const agentNodeChatsRef = useRef(agentNodeChats);
+    const agentNodeRunsRef = useRef(new Map<string, AbortController>());
     const consumedAgentRequestProjectRef = useRef<string | null>(null);
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
@@ -553,10 +562,66 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
     const cleanupCanvasFiles = useCallback(
         (extra?: unknown, storageKeys?: ReadonlyMap<string, string>) => {
-            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current, tasks: Array.from(nodeTaskRunsRef.current.values()) }, storageKeys);
+            cleanupAssetImages({ extra, agentNodeChats: agentNodeChatsRef.current, history: historyRef.current, lastHistory: lastHistoryRef.current, tasks: Array.from(nodeTaskRunsRef.current.values()) }, storageKeys);
         },
         [cleanupAssetImages],
     );
+
+    const updateAgentNodeChat = useCallback((nodeId: string, change: (chat: CanvasNodeChat) => CanvasNodeChat) => {
+        const current = agentNodeChatsRef.current;
+        const chat = current[nodeId] || { model: effectiveConfig.textModel || effectiveConfig.model, channelId: effectiveConfig.textChannelId, contextTurns: 8 as const, messages: [] };
+        const next = { ...current, [nodeId]: change(chat) };
+        agentNodeChatsRef.current = next;
+        setAgentNodeChats(next);
+    }, [effectiveConfig.model, effectiveConfig.textChannelId, effectiveConfig.textModel]);
+
+    const sendAgentNodeMessage = useCallback(async (nodeId: string, text: string) => {
+        if (agentNodeRunsRef.current.has(nodeId)) return;
+        const chat = agentNodeChatsRef.current[nodeId] || { model: effectiveConfig.textModel || effectiveConfig.model, channelId: effectiveConfig.textChannelId, contextTurns: 8 as const, messages: [] };
+        const references = agentNodeReferences(nodeId, nodesRef.current, connectionsRef.current);
+        const userMessage = { id: nanoid(), role: "user" as const, text, createdAt: new Date().toISOString(), references };
+        const responseId = nanoid();
+        updateAgentNodeChat(nodeId, (current) => ({ ...current, messages: [...current.messages, userMessage, { id: responseId, role: "assistant" as const, text: "", createdAt: new Date().toISOString(), status: "pending" as const }] }));
+        const controller = new AbortController();
+        agentNodeRunsRef.current.set(nodeId, controller);
+        try {
+            if (!chat.model.trim()) throw new Error("请先选择聊天模型");
+            const unsupported = connectionsRef.current.filter((connection) => connection.toNodeId === nodeId).map((connection) => nodesRef.current.find((node) => node.id === connection.fromNodeId)).find((node) => node && node.type !== CanvasNodeType.Text && !isCanvasImageNodeType(node.type));
+            if (unsupported) throw new Error(`「${unsupported.title}」不能直接连入 Agent 聊天；视频请先截帧，音频暂不支持`);
+            if (!isAiConfigReady({ ...effectiveConfig, model: chat.model, textModel: chat.model, textChannelId: chat.channelId || "", activeChannelId: chat.channelId || "" }, chat.model)) throw new Error("所选模型渠道尚未配置完成");
+            const images = references.filter((reference) => reference.kind === "image");
+            if (images.length > 5) throw new Error("一次最多连接 5 张图片，请断开多余连线");
+            for (const reference of references) {
+                if (reference.kind === "image" && !reference.url && !reference.storageKey) throw new Error(`图片「${reference.title}」没有可读取的内容`);
+                if (reference.kind === "text" && !reference.text?.trim()) throw new Error(`文本「${reference.title}」没有内容`);
+            }
+            const history = chat.messages.filter((item) => item.status !== "pending" && item.status !== "error").slice(-chat.contextTurns * 2);
+            const protocolMessages: CanvasAgentProtocolMessage[] = history.map((item): CanvasAgentProtocolMessage => item.role === "assistant"
+                ? { role: "assistant", content: item.text }
+                : { role: "user", content: agentNodeMessageText(item.text, item.references || []) });
+            const currentContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [{ type: "text", text: agentNodeMessageText(text, references) }];
+            for (const reference of images) {
+                const source = await imageToDataUrl({ storageKey: reference.storageKey, url: reference.url });
+                const compressed = await shrinkImageToBudget(source, Math.floor(3 * 1024 * 1024 / images.length));
+                if (!compressed) throw new Error(`图片「${reference.title}」无法压缩到发送预算，请换一张较小的图片`);
+                currentContent.push({ type: "image_url", image_url: { url: compressed } });
+            }
+            if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
+            protocolMessages.push({ role: "user", content: currentContent });
+            const textLength = protocolMessages.reduce((total, item) => total + (typeof item.content === "string" ? item.content.length : Array.isArray(item.content) ? item.content.reduce((length, part) => length + (part.type === "text" ? part.text.length : 0), 0) : 0), 0);
+            if (textLength > 60000) throw new Error("本轮文本上下文超过 6 万字符，请缩短关联文本或选择较短上下文");
+            const answer = await requestCanvasNodeChat({ config: effectiveConfig, model: chat.model, channelId: chat.channelId, messages: protocolMessages, signal: controller.signal });
+            if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
+            if (agentNodeRunsRef.current.get(nodeId) !== controller) return;
+            updateAgentNodeChat(nodeId, (current) => ({ ...current, messages: current.messages.map((item) => item.id === responseId ? { ...item, text: answer, status: undefined } : item) }));
+        } catch (error) {
+            if (agentNodeRunsRef.current.get(nodeId) !== controller) return;
+            const details = controller.signal.aborted ? "已停止，本轮没有返回内容。" : error instanceof Error ? error.message : "请求失败";
+            updateAgentNodeChat(nodeId, (current) => ({ ...current, messages: current.messages.map((item) => item.id === responseId ? { ...item, text: details, status: "error" } : item) }));
+        } finally {
+            if (agentNodeRunsRef.current.get(nodeId) === controller) agentNodeRunsRef.current.delete(nodeId);
+        }
+    }, [effectiveConfig, isAiConfigReady, updateAgentNodeChat]);
 
     const getBatchGroupNodes = useCallback((activeNode: CanvasNodeData | null) => {
         if (!activeNode) return [];
@@ -597,8 +662,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             clearTimeout(historyCleanupTimerRef.current);
             historyCleanupTimerRef.current = null;
         }
-        const usedKeys = collectImageStorageKeys(nodesRef.current, new Set(), storageKeys);
-        if (Array.from(storageKeys.values()).some((key) => !usedKeys.has(key))) cleanupAssetImages({ nodes: nodesRef.current }, storageKeys, useUserStore.getState().token);
+        const usedKeys = collectImageStorageKeys({ nodes: nodesRef.current, agentNodeChats: agentNodeChatsRef.current }, new Set(), storageKeys);
+        if (Array.from(storageKeys.values()).some((key) => !usedKeys.has(key))) cleanupAssetImages({ nodes: nodesRef.current, agentNodeChats: agentNodeChatsRef.current }, storageKeys, useUserStore.getState().token);
+        agentNodeRunsRef.current.forEach((controller) => controller.abort());
     }, [cleanupAssetImages]);
 
     useEffect(() => {
@@ -614,6 +680,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
         }
 
         const restore = async () => {
+            agentNodeRunsRef.current.forEach((controller) => controller.abort());
+            agentNodeRunsRef.current.clear();
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
             for (const node of restoredNodes) {
                 const id = node.metadata?.clientTaskId;
@@ -626,6 +694,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             setNodes(restoredNodes);
             setConnections(project.connections);
             setChatSessions(restoredSessions);
+            const restoredNodeChats = Object.fromEntries(Object.entries(project.agentNodeChats || {}).filter(([id]) => restoredNodes.some((node) => node.id === id && node.type === CanvasNodeType.Agent)).map(([id, chat]) => [id, { ...chat, messages: chat.messages.map((item) => item.status === "pending" ? { ...item, status: "error" as const, text: "上次请求因页面关闭而中断，请重新发送。" } : item) }]));
+            agentNodeChatsRef.current = restoredNodeChats;
+            setAgentNodeChats(restoredNodeChats);
             setActiveChatId(project.activeChatId || null);
             setAgentConfig(project.agentConfig || null);
             setBackgroundMode(project.backgroundMode);
@@ -712,8 +783,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, agentConfig, backgroundMode, showImageInfo });
-    }, [activeChatId, agentConfig, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+        updateProject(projectId, { nodes, connections, chatSessions, agentNodeChats, activeChatId, agentConfig, backgroundMode, showImageInfo });
+    }, [activeChatId, agentConfig, agentNodeChats, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -899,7 +970,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
             const connection = normalizeConnection(current.nodeId, targetNodeId, nodesRef.current, current.handleType);
             if (!connection) {
-                message.warning("配置节点之间不能连接");
+                message.warning(nodesRef.current.some((node) => (node.id === current.nodeId || node.id === targetNodeId) && node.type === CanvasNodeType.Agent) ? "Agent 聊天只接收图片和文本；视频请先截帧" : "这些节点不能连接");
                 return;
             }
             const { fromNodeId, toNodeId } = connection;
@@ -951,14 +1022,14 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             if ((type === CanvasNodeType.Image || type === CanvasNodeType.Video) && metadata?.size) newNode = applyNodeConfigPatch(newNode, { size: metadata.size });
             const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
             if (!connection) {
-                message.warning("配置节点之间不能连接");
+                message.warning(type === CanvasNodeType.Agent || nodesRef.current.some((node) => node.id === pending.connection.nodeId && node.type === CanvasNodeType.Agent) ? "Agent 聊天只接收图片和文本；视频请先截帧" : "这些节点不能连接");
                 return;
             }
             setNodes((prev) => [...prev, newNode]);
             setConnections((prev) => [...prev, { id: nanoid(), ...connection }]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
-            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Director) setDialogNodeId(newNode.id);
+            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Director && type !== CanvasNodeType.Agent) setDialogNodeId(newNode.id);
             setPendingConnectionCreate(null);
             setConnecting(null);
         },
@@ -1246,7 +1317,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             setNodes((prev) => [...prev, newNode]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
-            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Director) setDialogNodeId(newNode.id);
+            if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Director && type !== CanvasNodeType.Agent) setDialogNodeId(newNode.id);
         },
         [effectiveConfig.audioWorkflowRef, effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageChannelId, effectiveConfig.imageModel, effectiveConfig.imageWorkflowRef, effectiveConfig.model, effectiveConfig.videoChannelId, effectiveConfig.videoModel, effectiveConfig.videoWorkflowRef, getCanvasCenter],
     );
@@ -1267,7 +1338,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const removedNodes = nodesRef.current.filter((node) => allIds.has(node.id));
             const remainingNodes = nodesRef.current.filter((node) => !allIds.has(node.id));
             const removedKeys = collectImageStorageKeys(removedNodes);
-            const usedKeys = collectImageStorageKeys({ nodes: remainingNodes, assets: useAssetStore.getState().assets, history: historyRef.current, lastHistory: lastHistoryRef.current });
+            const usedKeys = collectImageStorageKeys({ nodes: remainingNodes, agentNodeChats: agentNodeChatsRef.current, assets: useAssetStore.getState().assets, history: historyRef.current, lastHistory: lastHistoryRef.current });
+            allIds.forEach((id) => agentNodeRunsRef.current.get(id)?.abort());
             const disposableKeys = [...removedKeys].filter((key) => !usedKeys.has(key));
             setChatSessions((sessions) => sessions.map((session) => ({
                 ...session,
@@ -1348,6 +1420,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     }, [cancelPendingConnectionCreate]);
 
     const clearCanvas = useCallback(() => {
+        agentNodeRunsRef.current.forEach((controller) => controller.abort());
         setNodes([]);
         setConnections([]);
         setInfoNodeId(null);
@@ -2599,7 +2672,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 const x = node.position.x + node.width + 96;
                 let y = node.position.y + node.height / 2 - size.height / 2;
                 while (nodesRef.current.some((item) => item.id !== node.id && item.position.x < x + size.width && item.position.x + item.width > x && item.position.y < y + size.height && item.position.y + item.height > y)) y += size.height + 24;
-                const frameName = position === "first" ? "首帧" : position === "last" ? "尾帧" : "当前帧";
+                const frameName = position === "first" ? "首帧" : position === "middle" ? "中间帧" : position === "last" ? "尾帧" : "当前帧";
                 const child: CanvasNodeData = {
                     id,
                     type: CanvasNodeType.Image,
@@ -3900,6 +3973,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         node.type !== CanvasNodeType.Group &&
                         node.type !== CanvasNodeType.Config &&
                         node.type !== CanvasNodeType.Director &&
+                        node.type !== CanvasNodeType.Agent &&
                         !node.metadata?.groupId &&
                         !node.metadata?.excludeUpstreamText,
                 );
@@ -4125,6 +4199,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     if (!fromNode) return missingNodeResult(fromNodeId);
                     if (!toNode) return missingNodeResult(toNodeId);
                     if (fromNodeId === toNodeId) return { ok: false, code: "self_connection", message: "节点不能连接到自身" };
+                    if (fromNode.type === CanvasNodeType.Agent || (toNode.type === CanvasNodeType.Agent && fromNode.type !== CanvasNodeType.Text && !isCanvasImageNodeType(fromNode.type))) {
+                        return { ok: false, code: "invalid_connection", message: "Agent 聊天节点只接收图片和文本；视频请先截帧" };
+                    }
                     if (fromNode.type === CanvasNodeType.Config && toNode.type === CanvasNodeType.Config) {
                         return { ok: false, code: "invalid_connection", message: "配置节点之间不能连接" };
                     }
@@ -4843,7 +4920,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                         onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
                                         onClose={() => setDialogNodeId(null)}
                                     />
-                                ) : panelNode.type === CanvasNodeType.Director ? null : (
+                                ) : panelNode.type === CanvasNodeType.Director || panelNode.type === CanvasNodeType.Agent ? null : (
                                     <CanvasNodePromptPanel
                                         node={panelNode}
                                         isRunning={runningNodeId === panelNode.id}
@@ -4871,7 +4948,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                                 )
                             }
                             renderNodeContent={(contentNode) =>
-                                contentNode.type === CanvasNodeType.Director ? (
+                                contentNode.type === CanvasNodeType.Agent ? (
+                                    <CanvasAgentChatNode
+                                        chat={agentNodeChats[contentNode.id]}
+                                        references={agentNodeReferences(contentNode.id, nodes, connections)}
+                                        onSend={(text) => void sendAgentNodeMessage(contentNode.id, text)}
+                                        onStop={() => agentNodeRunsRef.current.get(contentNode.id)?.abort()}
+                                        onModelChange={(model, channelId) => updateAgentNodeChat(contentNode.id, (chat) => ({ ...chat, model, channelId }))}
+                                        onContextChange={(contextTurns) => updateAgentNodeChat(contentNode.id, (chat) => ({ ...chat, contextTurns }))}
+                                    />
+                                ) : contentNode.type === CanvasNodeType.Director ? (
                                     <CanvasDirectorNodePanel onOpen={() => setOpenDirectorNodeId(contentNode.id)} />
                                 ) : (
                                     <CanvasConfigNodePanel
@@ -4927,7 +5013,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                             <rect width="100%" height="100%" fill={theme.canvas.selectionFill} stroke={theme.canvas.selectionStroke} strokeWidth={1.5 / viewport.k} strokeDasharray={`${10 / viewport.k} ${6 / viewport.k}`} />
                         </svg>
                     ) : null}
-                    {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}
+                    {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} canCreateAgent={pendingConnectionCreate.connection.handleType === "source" && nodes.some((node) => node.id === pendingConnectionCreate.connection.nodeId && (node.type === CanvasNodeType.Text || isCanvasImageNodeType(node.type)))} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}
                     {nodeCreatePosition ? (
                         <NodeCreateMenu
                             position={nodeCreatePosition}
@@ -5015,6 +5101,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onAddPanorama={() => createNode(CanvasNodeType.Panorama)}
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
+                    onAddAgent={() => createNode(CanvasNodeType.Agent)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     onUpload={() => handleUploadRequest()}
@@ -5904,6 +5991,12 @@ function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: C
     const second = nodes.find((node) => node.id === secondNodeId);
     if (!first || !second || first.id === second.id) return null;
     if (first.type === CanvasNodeType.Group || second.type === CanvasNodeType.Group) return null;
+    if (first.type === CanvasNodeType.Agent || second.type === CanvasNodeType.Agent) {
+        const source = first.type === CanvasNodeType.Agent ? second : first;
+        if (first.type === CanvasNodeType.Agent && firstHandleType === "source") return null;
+        if (second.type === CanvasNodeType.Agent && firstHandleType === "target") return null;
+        return source.type === CanvasNodeType.Text || isCanvasImageNodeType(source.type) ? { fromNodeId: source.id, toNodeId: first.type === CanvasNodeType.Agent ? first.id : second.id } : null;
+    }
     if (second.type === CanvasNodeType.Director) {
         if (!isCanvasImageNodeType(first.type)) return null;
         return firstHandleType === "target" ? { fromNodeId: second.id, toNodeId: first.id } : { fromNodeId: first.id, toNodeId: second.id };
@@ -5917,6 +6010,24 @@ function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: C
     if (first.type === CanvasNodeType.Config && firstHandleType === "target") return { fromNodeId: second.id, toNodeId: first.id };
     if (first.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };
     return { fromNodeId: first.id, toNodeId: second.id };
+}
+
+function agentNodeReferences(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): CanvasNodeChatReference[] {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    return connections.filter((connection) => connection.toNodeId === nodeId).flatMap((connection) => {
+        const source = byId.get(connection.fromNodeId);
+        if (!source) return [];
+        if (source.type === CanvasNodeType.Text) return [{ nodeId: source.id, title: source.title, kind: "text" as const, text: source.metadata?.content || "" }];
+        if (isCanvasImageNodeType(source.type)) return [{ nodeId: source.id, title: source.title, kind: "image" as const, storageKey: source.metadata?.storageKey, url: source.metadata?.content?.startsWith("data:") ? undefined : source.metadata?.content }];
+        return [];
+    });
+}
+
+function agentNodeMessageText(text: string, references: CanvasNodeChatReference[]) {
+    const details = references.map((reference) => reference.kind === "text"
+        ? `【关联文本：${reference.title}】\n${reference.text || ""}`
+        : `【关联图片：${reference.title}；图片仅在发送该轮时附加】`).join("\n\n");
+    return details ? `${text}\n\n${details}` : text;
 }
 
 function getInputSummary(inputs: NodeGenerationInput[]) {

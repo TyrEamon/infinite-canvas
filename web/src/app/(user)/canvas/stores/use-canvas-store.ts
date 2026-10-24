@@ -7,7 +7,7 @@ import { listCanvasProjects, saveCanvasProject, syncCanvasProjects } from "@/ser
 import { fetchUserConfig } from "@/services/api/user-config";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
-import type { CanvasAgentConfig, CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasPendingAgentRequest, ViewportTransform } from "../types";
+import type { CanvasAgentConfig, CanvasAssistantSession, CanvasConnection, CanvasNodeChat, CanvasNodeData, CanvasPendingAgentRequest, ViewportTransform } from "../types";
 
 export type CanvasSidePanelState = {
     open: boolean;
@@ -25,6 +25,7 @@ export type CanvasProject = {
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
     chatSessions: CanvasAssistantSession[];
+    agentNodeChats: Record<string, CanvasNodeChat>;
     activeChatId: string | null;
     agentConfig: CanvasAgentConfig | null;
     autoTitlePending: boolean;
@@ -44,7 +45,7 @@ type CanvasStore = {
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "agentConfig" | "autoTitlePending" | "backgroundMode" | "showImageInfo" | "viewport" | "sidePanel" | "agentPanel" | "pendingAgentRequest">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "agentNodeChats" | "activeChatId" | "agentConfig" | "autoTitlePending" | "backgroundMode" | "showImageInfo" | "viewport" | "sidePanel" | "agentPanel" | "pendingAgentRequest">>) => void;
     syncWithRemote: (token: string, syncEnabled: boolean) => Promise<void>;
     setSyncEnabled: (enabled: boolean) => void;
 };
@@ -262,6 +263,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     nodes: [],
                     connections: [],
                     chatSessions: [],
+                    agentNodeChats: {},
                     activeChatId: null,
                     agentConfig: options?.agentConfig || null,
                     autoTitlePending: true,
@@ -288,6 +290,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     nodes: source.nodes || [],
                     connections: source.connections || [],
                     chatSessions: (source.chatSessions || []).map((session) => ({ ...session, codexThreadId: undefined, codexServiceId: undefined })),
+                    agentNodeChats: Object.fromEntries(Object.entries(source.agentNodeChats || {}).map(([id, chat]) => [id, { ...chat, messages: chat.messages.map((item) => item.status === "pending" ? { ...item, status: "error" as const, text: "上次请求因页面关闭而中断，请重新发送。" } : item) }])),
                     activeChatId: source.activeChatId || null,
                     agentConfig: source.agentConfig || null,
                     autoTitlePending: false,

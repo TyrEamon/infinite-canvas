@@ -146,6 +146,27 @@ export async function requestCanvasAgentTurn(input: RequestCanvasAgentTurnInput)
     throw requestError;
 }
 
+export async function requestCanvasNodeChat(input: {
+    config: AiConfig;
+    model: string;
+    channelId?: string;
+    messages: CanvasAgentProtocolMessage[];
+    signal?: AbortSignal;
+}) {
+    const config: CanvasAgentAiConfig = {
+        ...input.config,
+        model: input.model,
+        textModel: input.model,
+        activeChannelId: input.channelId || "",
+        textChannelId: input.channelId || "",
+        textStreaming: false,
+        textReasoningEnabled: false,
+    };
+    const result = await requestCompletion(config, "你是画布内的独立聊天助手。只根据用户消息与本轮附带的参考素材进行分析和讨论；不能操作画布，也不要声称已执行操作。无法读取图片时应明确说明。", input.messages, [], undefined, input.signal);
+    if (!result.content.trim()) throw new Error("模型没有返回文字内容");
+    return result.content.trim();
+}
+
 export function canvasAgentSystemPrompt(config: AiConfig, prompt: string, jsonTools: CanvasAgentToolDefinition[] = [], nativeTools = false) {
     const configured = (config.systemPrompts.text || config.systemPrompt).trim();
     if (nativeTools) prompt += "\n\n【原生工具回退信号】\n需要执行任何画布操作时必须返回原生工具调用；若本轮无法返回任何原生工具调用，只输出 " + CANVAS_AGENT_JSON_FALLBACK_SIGNAL + "，不得附加文字、Markdown 或声称已完成。仅咨询、解释、分析且无需执行画布操作时正常文字回答，禁止输出此信号。";

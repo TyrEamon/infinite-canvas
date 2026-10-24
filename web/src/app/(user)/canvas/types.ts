@@ -17,6 +17,7 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Director = "director",
+    Agent = "agent",
     Group = "group",
 }
 
@@ -292,6 +293,31 @@ export type CanvasAssistantSession = {
     contextCheckpoint?: string;
     createdAt: string;
     updatedAt: string;
+};
+
+export type CanvasNodeChatReference = {
+    nodeId: string;
+    title: string;
+    kind: "text" | "image";
+    text?: string;
+    storageKey?: string;
+    url?: string;
+};
+
+export type CanvasNodeChatMessage = {
+    id: string;
+    role: "user" | "assistant";
+    text: string;
+    createdAt: string;
+    references?: CanvasNodeChatReference[];
+    status?: "pending" | "error";
+};
+
+export type CanvasNodeChat = {
+    model: string;
+    channelId?: string;
+    contextTurns: 4 | 8 | 16;
+    messages: CanvasNodeChatMessage[];
 };
 
 export type ConnectionHandle = {

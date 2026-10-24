@@ -73,6 +73,7 @@ const ASSISTANT_NODE_TYPE_META = {
     [CanvasNodeType.Text]: { Icon: Type, label: "文本" },
     [CanvasNodeType.Config]: { Icon: Settings2, label: "生成配置" },
     [CanvasNodeType.Director]: { Icon: Clapperboard, label: "导演台" },
+    [CanvasNodeType.Agent]: { Icon: Bot, label: "Agent 聊天" },
     [CanvasNodeType.Group]: { Icon: Group, label: "组" },
 };
 const ASSISTANT_NODE_STATUS_COLOR: Record<string, string> = {
