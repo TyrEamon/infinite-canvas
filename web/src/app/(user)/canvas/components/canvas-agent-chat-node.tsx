@@ -45,12 +45,14 @@ export function CanvasAgentChatNode({ chat, references, onSend, onStop, onModelC
             className="flex h-full w-full flex-col select-text"
             style={{ color: theme.node.text, background: theme.node.fill }}
             data-canvas-no-zoom
-            onMouseDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => {
+                if (!(event.target instanceof Element && event.target.closest("[data-agent-drag-handle]"))) event.stopPropagation();
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             onWheelCapture={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
         >
-            <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2" style={{ borderColor: theme.node.stroke }}>
+            <div data-agent-drag-handle className="flex shrink-0 cursor-grab select-none items-center gap-2 border-b px-3 py-2 active:cursor-grabbing" style={{ borderColor: theme.node.stroke }}>
                 <Bot className="size-4 shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-xs font-semibold">独立聊天</span>
                 <span className="text-[11px]" style={{ color: theme.node.muted }}>最近最多 {contextTurns} 轮</span>
